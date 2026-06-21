@@ -1,0 +1,29 @@
+dataset: 'ap'
+t_his: 15
+t_pred: 60
+batch_size: 1024
+num_epoch: 501
+milestone: [50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000, 1100, 1200, 1300, 1400, 1500]
+num_data_sample: 50000
+num_val_data_sample: 5000
+lr: 1.e-3
+n_pre: 15
+multimodal_threshold: 2.0
+multimodal_path:
+data_candi_path:
+padding: 'LastFrame'
+num_layers: 6
+num_heads: 8
+latent_dims: 512
+dropout: 0.2
+mod_train: 0.5
+mod_test: 1.
+cfg_scale: 0.5
+use_dct: True
+dct_norm_enable: False
+resume: False
+ckpt_path: ./results/humaneva_train_2025-03-17-17-20/models/ckpt_ema_200.pt
+flash_attention: True
+model_name: 'athleticflow'
+remove_root: True
+res_fm: false
