@@ -49,7 +49,7 @@ data
 
 ### Pretrained Model
 
-We provide pretrained model [Google Drive](https://drive.google.com/drive/folders/18bbfFdvr80SDy_o3_ohZhnH-cFO8o_k3?usp=sharing) .
+We put pretrained models in `./results/{dataset}_af/models` foldels.
 
 ### Training
 
@@ -94,17 +94,17 @@ python main_fm.py --cfg wp_af --mode eval --ckpt ./results/wp_af/models/ckpt_ema
 
 ### Visualization
 #### AthletePose3D
-![h36m1](./inference/h36m_pred/out/pred_Directions.gif)
-![h36m2](./inference/h36m_pred/out/pred_Discussion%201.gif)
-![h36m3](./inference/h36m_pred/out/pred_Eating.gif)
+![ap3d1](./inference/ap3d_af_pred/out/pred_0.gif)
+![ap3d2](./inference/ap3d_af_pred/out/pred_10.gif)
+![ap3dm3](./inference/ap3d_af_pred/out/pred_20.gif)
 #### AthleticsPose
-![he1](./inference/he_pred/out/pred_Walking%201%20chunk0.gif)
-![he2](./inference/he_pred/out/pred_Gestures%201%20chunk1.gif)
-![he3](./inference/he_pred/out/pred_Jog%201%20chunk0.gif)
+![ap](./inference/ap_af_pred/out/pred_0.gif)
+![ap](./inference/ap_af_pred/out/pred_0.gif)
+![ap](./inference/ap_af_pred/out/pred_0.gif)
 #### WorldPose
-![he1](./inference/he_pred/out/pred_Walking%201%20chunk0.gif)
-![he2](./inference/he_pred/out/pred_Gestures%201%20chunk1.gif)
-![he3](./inference/he_pred/out/pred_Jog%201%20chunk0.gif)
+![wp](./inference/wp_af_pred/out/pred_0.gif)
+![wp](./inference/wp_af_pred/out/pred_0.gif)
+![wp](./inference/wp_af_pred/out/pred_0.gif)
 More visualization results can be seen in the 'inference' folder.
 
 ### Acknowledgments

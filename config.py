@@ -3,7 +3,6 @@ import os
 import time
 import torch
 from utils import util, generate_pad
-from models.bone_kinematics import RootBoneKinematics
 
 
 def get_log_dir_index(out_dir):

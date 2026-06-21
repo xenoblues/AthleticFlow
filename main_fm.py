@@ -28,7 +28,7 @@ if __name__ == '__main__':
     torch.backends.cudnn.benchmark = True
     torch.backends.cuda.enable_flash_sdp = True
     torch.backends.cuda.enable_mem_efficient_sdp(True)
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = True
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
     torch.backends.cuda.enable_math_sdp(True)
     torch.backends.cudnn.deterministic = True
     torch.use_deterministic_algorithms(True)
@@ -37,7 +37,7 @@ if __name__ == '__main__':
     parser.add_argument('--cfg', default='wp_af',
                         help='ap3d_af' or 'ap_af' or 'assemble')
     parser.add_argument('--generator', default='flow_matching', type=str, help='flow_matching' or 'diffusion')
-    parser.add_argument('--mode', default='pred', help='train / eval / pred / draw')
+    parser.add_argument('--mode', default='train', help='train / eval / pred / draw')
     parser.add_argument('--iter', type=int, default=0)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--device', type=str,
@@ -98,14 +98,14 @@ if __name__ == '__main__':
             multimodal_dict = get_multimodal_gt_full(logger, dataset_multi_test, args, cfg)
         else:
             multimodal_dict = get_multimodal_gt_full_custom(logger, dataset['test'], args, cfg)
-            trainer = Trainer_fm(
-                model=model,
-                generator=generator,
-                dataset=dataset,
-                cfg=cfg,
-                multimodal_dict=multimodal_dict,
-                logger=logger,
-                tb_logger=tb_logger)
+        trainer = Trainer_fm(
+            model=model,
+            generator=generator,
+            dataset=dataset,
+            cfg=cfg,
+            multimodal_dict=multimodal_dict,
+            logger=logger,
+            tb_logger=tb_logger)
         trainer.loop()
 
     elif args.mode == 'eval':

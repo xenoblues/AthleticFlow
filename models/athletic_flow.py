@@ -790,7 +790,7 @@ class HybridChainRelativeDualQKVAttention(nn.Module):
         x2 = self.norm2(x_local)
         q, k, v = self._split_qkv(self.qkv_global(x2))
 
-        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION]):
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]):
             y = F.scaled_dot_product_attention(
                 q, k, v,
                 attn_mask=inter_mask,

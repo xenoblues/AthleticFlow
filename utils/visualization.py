@@ -19,15 +19,6 @@ from datetime import datetime
 
 def render_animation(skeleton, poses_generator, algos, t_hist, fix_0=True, azim=0.0, output=None, mode='pred', size=2, ncol=5,
                      bitrate=3000, fix_index=None, dataset_name=None):
-    """
-    TODO
-    Render an animation. The supported output modes are:
-     -- 'interactive': display an interactive figure
-                       (also works on notebooks if associated with %matplotlib inline)
-     -- 'html': render the animation as HTML5 video. Can be displayed in a notebook using HTML(...).
-     -- 'filename.mp4': render and export the animation as an h264 video (requires ffmpeg).
-     -- 'filename.gif': render and export the animation a gif file (requires imagemagick).
-    """
     if mode == 'switch':
         fix_0 = False
     if fix_index is not None:

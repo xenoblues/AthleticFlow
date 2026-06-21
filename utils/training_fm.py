@@ -19,12 +19,7 @@ from flow_matching.path import CondOTProbPath, MixtureDiscreteProbPath
 from flow_matching.path.scheduler import PolynomialConvexScheduler
 from torch.nn.modules import Module
 # from adan import Adan
-# from models.KAFormer import update_gumbel_temperature, limb_regularization_loss
-# from models.SGTransformer import *
-# from models.transformer_mine import *
-from models.loss_functions import *
 from models.athletic_flow import *
-from models.bone_kinematics import RootBoneKinematics
 # from models.StochasticDistalOrientationResidual import *
 
 
@@ -109,11 +104,6 @@ class Trainer_fm:
         # torch.autograd.set_detect_anomaly(True)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=self.cfg.lr)
         # self.optimizer = Adan(self.model.parameters(), lr=self.cfg.lr, weight_decay=0.02)
-
-        if self.cfg.frame_mask:
-            self.criterion = nn.MSELoss(reduction='sum')
-        else:
-            self.criterion = nn.MSELoss()
 
         self.iter = -1
         if self.cfg.resume:
@@ -203,13 +193,6 @@ class Trainer_fm:
                 traj_mod = traj_pad
                 input_traj = None
 
-                if self.cfg.random_sample:
-                    input_traj = torch.zeros((traj.shape[0], self.cfg.n_pre, traj.shape[-1]))
-                    for i in range(traj.shape[0]):
-                        a = np.arange(traj.shape[1])
-                        np.random.shuffle(a)
-                        a = np.sort(a[:self.cfg.n_pre])
-                        input_traj[i, :, :] = traj[i, a, :]
 
                 if self.cfg.b_frequency_transform:
                     if self.cfg.use_dct:

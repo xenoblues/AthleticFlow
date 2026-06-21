@@ -19,15 +19,12 @@ from utils import padding_traj
 from utils.visualization import render_animation
 from models.transformer import *
 
-from models.gcn import MotionSTGCN
-
 from data_loader.dataset_h36m import DatasetH36M
 from data_loader.dataset_humaneva import DatasetHumanEva
 from data_loader.dataset_h36m_multimodal import DatasetH36M_multi
 from data_loader.dataset_humaneva_multimodal import DatasetHumanEva_multi
 from data_loader.dataset_assemble import DatasetAsb
 from scipy.spatial.distance import pdist, squareform
-from models.bone_kinematics import RootBoneKinematics
 import multiprocessing
 import pywt
 import ptwt
