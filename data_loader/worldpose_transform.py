@@ -35,7 +35,7 @@ def load_smpl_params(pkl_path):
     return params
 
 
-# ================== 向量化轴角→旋转矩阵（修复维度版）==================
+# ================== Axis Angle to Rotation Matrix==================
 def batch_aa2rotmat(aa):
     angle = np.linalg.norm(aa + 1e-8, axis=-1, keepdims=True)
     axis = aa / (angle + 1e-8)
@@ -50,7 +50,7 @@ def batch_aa2rotmat(aa):
     return rot.reshape(aa.shape[:-1] + (3, 3))
 
 
-# ================== SMPL正向运动学 ==================
+# ================== SMPL Forward Kinematics ==================
 def forward_kinematics(J_rest, rot_mats, parents):
     T, num_joints = rot_mats.shape[:2]
     trans = np.zeros((T, num_joints, 4, 4), dtype=np.float32)
@@ -62,7 +62,7 @@ def forward_kinematics(J_rest, rot_mats, parents):
     return trans[..., :3, 3]
 
 
-# ================== 学术标准：NaN时间轴线性插值 ==================
+# ================== NaN Processing ==================
 def interpolate_motion_nan(joints):
     T, J, D = joints.shape
     for j in range(J):
@@ -76,7 +76,7 @@ def interpolate_motion_nan(joints):
     return joints
 
 
-# ================== 主程序（修复维度+提速+插值）==================
+# WorldPose SMPL Parameters to 3D Pose
 if __name__ == "__main__":
     smpl_params = load_smpl_params(SMPL_MODEL_PATH)
     J_rest = smpl_params["J"].reshape(1, 24, 3)
@@ -91,30 +91,25 @@ if __name__ == "__main__":
         is_test = any(clip in fname for clip in TEST_CLIPS)
         data = np.load(os.path.join(WORLDPOSE_DIR, fname), allow_pickle=True)
 
-        # 读取数据 (N, T, ...)
         global_orient = data["global_orient"].astype(np.float32)
         body_pose = data["body_pose"].astype(np.float32)
         transl = data["transl"].astype(np.float32)
         N, T = global_orient.shape[:2]
 
-        # 拼接完整姿态: (N, T, 24, 3) ✅ 标准SMPL姿态维度
         full_pose = np.concatenate([global_orient, body_pose], axis=2)
 
-        # ✅ 修复核心：正确重塑维度计算旋转矩阵
-        # 展平为 (N*T*24, 3) → 批量计算 → 恢复为 (N,T,24,3,3)
+        # (N*T*24, 3) -> (N,T,24,3,3)
         rot_mat_flat = batch_aa2rotmat(full_pose.reshape(-1, 3))
         rot_mats = rot_mat_flat.reshape(N, T, 24, 3, 3)
 
-        # 单个人物序列处理（保留必要循环，速度最大化）
+        # Single Person
         for i in range(N):
             if np.all(np.isnan(global_orient[i])):
                 continue
-            # 正向运动学计算3D关节
             joints_3d = forward_kinematics(J_rest, rot_mats[i], parents)
             joints_3d += transl[i].reshape(T, 1, 3)
-            # 缺失值插值
+
             joints_3d = interpolate_motion_nan(joints_3d)
             test_seqs.append(joints_3d) if is_test else train_seqs.append(joints_3d)
 
-    # 保存最终运动数据
     np.savez_compressed(OUTPUT_PATH, train=train_seqs, test=test_seqs)

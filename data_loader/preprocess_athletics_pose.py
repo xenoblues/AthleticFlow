@@ -6,13 +6,13 @@ from scipy.interpolate import interp1d
 
 from utils import mocap_to_h36m
 
-# ===================== 配置参数（完全匹配你的数据） =====================
+
 ROOT_RAW_DIR = r"E:\MyPyProjects\HumanMAC\data\AthleticsPose\raw_markers_in_world"
 SAVE_DIR = r"E:\MyPyProjects\HumanMAC\data\AthleticsPose"
 ACTIONS = ["discus", "hurdle", "javelin", "racewalk", "running", "sd", "shotput", "sprint"]
 TEST_SUBJECTS = ["S00", "S05", "S11", "S12", "S13", "S16", "S17", "S20", "S21", "S22", "S23"]
 
-# FPS映射表（完全按照你提供的数据）
+# FPS of Each Video
 FPS_MAPPING = {
     ("discus", "S00", "20250125"): 60,
     ("discus", "S02", "20250125"): 60,
@@ -61,7 +61,7 @@ FPS_MAPPING = {
     ("sprint", "S23", "20250216"): 60,
 }
 
-# 运动预测参数（保持不变）
+# Prediction Parameters
 WINDOW_SIZE = 75  # 15历史 + 60未来（60fps对应1.25秒）
 JOINT_NUM = 17  # 17关节拓扑
 
