@@ -10,7 +10,7 @@ class DatasetAthleticsPose_multi(Dataset):
                  t_his=15,
                  t_pred=60,
                  actions='all',
-                 data_path=r"data\AthleticsPose",
+                 data_path=os.path.join("data", "AthleticsPose"),
                  multimodal_path=None,
                  data_candi_path=None,
                  **kwargs):

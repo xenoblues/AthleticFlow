@@ -1,0 +1,121 @@
+"""
+This code is adopted from:
+https://github.com/wei-mao-2019/gsps/blob/main/motion_pred/utils/skeleton.py
+"""
+
+import numpy as np
+import utils
+
+
+class Skeleton:
+    def __init__(self, parents, joints_left, joints_right):
+        assert len(joints_left) == len(joints_right)
+
+        self._parents = np.array(parents)
+        self._joints_left = joints_left
+        self._joints_right = joints_right
+        self._compute_metadata()
+        self._adj_mat = None
+        self._filters = None
+        self._skeleton_mask = None
+
+    def num_joints(self):
+        return len(self._parents)
+
+    def parents(self):
+        return self._parents
+
+    def has_children(self):
+        return self._has_children
+
+    def children(self):
+        return self._children
+
+    def adj_mat(self):
+        return self._adj_mat
+
+    def skeleton_mask(self):
+        return self._skeleton_mask
+
+    def multiscale_filters(self):
+        return self._filters
+
+    def remove_joints(self, joints_to_remove):
+        """
+        Remove the joints specified in 'joints_to_remove'.
+        """
+        valid_joints = []
+        for joint in range(len(self._parents)):
+            if joint not in joints_to_remove:
+                valid_joints.append(joint)
+
+        for i in range(len(self._parents)):
+            while self._parents[i] in joints_to_remove:
+                self._parents[i] = self._parents[self._parents[i]]
+
+        index_offsets = np.zeros(len(self._parents), dtype=int)
+        new_parents = []
+        for i, parent in enumerate(self._parents):
+            if i not in joints_to_remove:
+                new_parents.append(parent - index_offsets[parent])
+            else:
+                index_offsets[i:] += 1
+        self._parents = np.array(new_parents)
+
+        if self._joints_left is not None:
+            new_joints_left = []
+            for joint in self._joints_left:
+                if joint in valid_joints:
+                    new_joints_left.append(joint - index_offsets[joint])
+            self._joints_left = new_joints_left
+        if self._joints_right is not None:
+            new_joints_right = []
+            for joint in self._joints_right:
+                if joint in valid_joints:
+                    new_joints_right.append(joint - index_offsets[joint])
+            self._joints_right = new_joints_right
+
+        self._compute_metadata()
+
+        return valid_joints
+
+    def joints_left(self):
+        return self._joints_left
+
+    def joints_right(self):
+        return self._joints_right
+
+    def _compute_metadata(self):
+        self._has_children = np.zeros(len(self._parents)).astype(bool)
+        for i, parent in enumerate(self._parents):
+            if parent != -1:
+                self._has_children[parent] = True
+
+        self._children = []
+        for i, parent in enumerate(self._parents):
+            self._children.append([])
+        for i, parent in enumerate(self._parents):
+            if parent != -1:
+                self._children[parent].append(i)
+
+    def gen_adj_mat(self, masked_joints=None):
+        self._skeleton_mask = np.zeros((len(self._children) - 1, len(self._children) - 1))
+        for i, children in enumerate(self._children):
+            # 删除根节点
+            if i != 0:
+                self._skeleton_mask[i - 1, i - 1] = 1
+                if masked_joints is None or i not in masked_joints:
+                    for j in children:
+                        if j != 0:
+                            self._skeleton_mask[i - 1, j - 1] = 1
+                            self._skeleton_mask[j - 1, i - 1] = 1
+                else:
+                    for j in children:
+                        if j != 0:
+                            self._skeleton_mask[i - 1, j - 1] = 1
+                            self._skeleton_mask[j - 1, self._parents[i] - 1] = 1
+
+        self._adj_mat = utils.normalize_digraph(self._skeleton_mask)
+
+    def gen_filters(self, filter_num=1):
+        self._filters = utils.multiscale_filters(self._adj_mat, filter_num)

@@ -146,6 +146,7 @@ class Config:
 
         self.remove_root = cfg.get('remove_root', True)
         self.res_fm = cfg.get('res_fm', False)
+        self.autoregression = cfg.get('autoregression', False)
 
         if not self.remove_root:
             self.joint_num += 1

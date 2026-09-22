@@ -1,0 +1,35 @@
+# torch/torchvision were built against CUDA 13.2 in the dev environment.
+# Install the CUDA build matching your own GPU/driver from
+# https://pytorch.org/get-started/locally/ (e.g.
+# `pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu121`)
+# rather than installing these two lines from PyPI directly.
+torch==2.12.0
+torchvision==0.27.0
+torchdiffeq==0.2.5
+numpy==2.4.4
+scipy==1.16.3
+pandas==3.0.3
+matplotlib==3.10.9
+Pillow==12.2.0
+tqdm==4.67.3
+PyYAML==6.0.3
+tensorboardX==2.6.5
+thop==0.1.1
+joblib==1.5.3
+einops==0.8.2
+networkx==3.6.1
+sympy==1.14.0
+zarr==3.2.1
+scikit-learn==1.8.0
+PyWavelets==1.9.0
+ptwt==1.0.1
+pytorch-kinematics==0.10.0
+mamba-ssm==2.3.2.post1
+adan==0.0.2
+vpython==7.6.5
+autobahn==25.12.2
+
+# Only needed by some baselines/ methods' video-loading utilities
+# (not exercised by the ap3d/ap/wp training & eval pipelines above):
+opencv-python
+decord
