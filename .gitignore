@@ -1,5 +1,7 @@
 /data/
 *.pt
+*.pth
+*.pth.tar
 /.idea
 
 /__pycache__### Python template

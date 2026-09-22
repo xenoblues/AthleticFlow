@@ -39,7 +39,7 @@ class DatasetAthleticsPose(Dataset):
                  t_pred=60,
                  actions='all',
                  use_vel=False,
-                 data_path=r"data\AthleticsPose",
+                 data_path=os.path.join("data", "AthleticsPose"),
                  **kwargs):
         self.use_vel = use_vel
         cur_path = os.path.abspath(os.path.dirname(__file__))
