@@ -13,7 +13,7 @@ directly (see the comment at the top of `requirements.txt`).
 
 ### Data
 
-Please  download all files from [GoogleDrive](https://drive.google.com/drive/folders/1hTTGkzFtvehHheMAltARRHRfy1ZLqQO3?usp=drive_link) and put `/data` directory on the root path of project.
+Please download all files from [GoogleDrive](https://drive.google.com/drive/folders/1hTTGkzFtvehHheMAltARRHRfy1ZLqQO3?usp=drive_link) and put `/data` directory on the root path of project.
 
 Final `./data` directory structure is shown below:
 
@@ -62,7 +62,7 @@ data
 
 Checkpoints are large binary files and are not tracked by git in this repo
 (see `.gitignore`). Download `athleticflow_pretrained_weights.zip`
-(link: TODO) and extract it at the root of this project -- it unpacks
+from [GoogleDriver](https://drive.google.com/file/d/1hBevcQuZLsq5tSY2Nss_yZti4Na80LY8/view?usp=sharing) and extract it at the root of this project -- it unpacks
 directly into `./results/{dataset}_af/models/` (AthleticFlow's own
 checkpoints) and `./baselines/*/weights/` (the baseline methods'
 checkpoints, see [Baselines](#baselines) below), so no manual file moving
