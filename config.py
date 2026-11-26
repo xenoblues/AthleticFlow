@@ -10,7 +10,7 @@ JOINT_NUM = {'ap3d': 16, 'ap': 16, 'wp': 23}  # joints without the root
 
 
 def resolve_cfg_path(cfg_id):
-    """'ap3d_af' -> cfg/ap3d_af.yml, 'ablation/ap3d_af_nobias' -> cfg/ablation/ap3d_af_nobias.yml, or a .yml path."""
+    """'ap3d_af' -> cfg/ap3d_af.yml, 'ablation/ap3d_af_bias_none' -> cfg/ablation/ap3d_af_bias_none.yml, or a .yml path."""
     if cfg_id.endswith('.yml') or cfg_id.endswith('.yaml'):
         return cfg_id
     return os.path.join(ROOT_DIR, 'cfg', '%s.yml' % cfg_id)

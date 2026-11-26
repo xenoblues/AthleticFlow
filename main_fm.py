@@ -27,7 +27,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', default='ap3d_af',
-                        help="config name under cfg/ (e.g. ap3d_af, ap_af, wp_af, ap3d_sdfm, ablation/ap3d_af_nobias) "
+                        help="config name under cfg/ (e.g. ap3d_af, ap_af, wp_af, ap3d_sdfm, ablation/ap3d_af_bias_none) "
                              "or a path to a .yml file")
     parser.add_argument('--mode', default='train', help='train / eval / pred')
     parser.add_argument('--seed', type=int, default=0)
