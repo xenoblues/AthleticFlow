@@ -1,24 +1,31 @@
+# HumanMAC on wp (configuration of the seed-0 checkpoint weights/wp/hmac.pt)
 dataset: 'wp'
 t_his: 25
 t_pred: 100
+# paths relative to --data_root (default: <AthleticFlow repo>/data)
+multimodal_path: 'worldpose/multimodal/t_his25_1_thre0.500_t_pred100_thre0.100_index_filterd.npz'
+data_candi_path: 'worldpose/multimodal/data_candi_t_his25_t_pred100_skiprate25.npz'
+# jitter seam uses the reconstructed history (protocol of the WorldPose table)
+jitter_seam: 'predicted'
+
+# training
 batch_size: 1024
 num_epoch: 1000
 num_data_sample: 50000
 num_val_data_sample: 5000
 lr: 1.e-3
+
+# diffusion / denoiser
 n_pre: 25
-multimodal_path:
-data_candi_path:
 padding: 'LastFrame'
 Complete: True
 noise_steps: 1000
 ddim_timesteps: 100
-scheduler: 'Cosine' # 'Cosine' 'Linear' 'Sqrt' 'Sigmoid'
+scheduler: 'Cosine'
 num_layers: 6
 num_heads: 8
 latent_dims: 512
 dropout: 0.2
 mod_train: 0.5
 mod_test: 1.
-dct_norm_enable: False
 model_name: 'hmac'

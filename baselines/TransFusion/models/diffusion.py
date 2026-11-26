@@ -1,3 +1,4 @@
+# From TransFusion (https://github.com/sibotian96/TransFusion, MIT License, Copyright (c) 2024 Sibo Tian).
 import copy
 import torch
 from utils import *

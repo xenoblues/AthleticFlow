@@ -1,9 +1,10 @@
+# From TransFusion (https://github.com/sibotian96/TransFusion, MIT License, Copyright (c) 2024 Sibo Tian).
 import torch
 import torch.nn.functional as F
 from torch import layer_norm, nn
 import numpy as np
 import math
-from utils import *
+
 
 
 def timestep_embedding(timesteps, dim, max_period=10000):

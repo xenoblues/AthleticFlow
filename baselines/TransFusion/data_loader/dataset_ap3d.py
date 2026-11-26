@@ -1,136 +1,71 @@
+"""AthletePose3D (17 joints, H36M ordering, 60 fps).
+
+Joint order: 0 pelvis, 1 RHip, 2 RKnee, 3 RAnkle, 4 LHip, 5 LKnee, 6 LAnkle, 7 spine,
+8 thorax, 9 neck, 10 head, 11 LShoulder, 12 LElbow, 13 LWrist, 14 RShoulder, 15 RElbow, 16 RWrist.
+
+Sequences are loaded per video from {split}_joint_3d_camera_fps.npy / {split}_meta_fps.joblib
+(train = 'train', test = 'valid'), converted from mm to m, root-centred and divided by
+MAX_VAL = 2.1. Videos whose root-relative coordinates exceed 2 m are discarded.
+The sequence reader follows MotionBERT's datareader_h36m.py.
+"""
 import os
-import math
-import torch
 import random
+
+import joblib
 import numpy as np
-from sklearn.externals.array_api_compat import torch
 
-from data_loader.dataset import Dataset
-from data_loader.skeleton import Skeleton
-from data_loader.datareader_ap3d import DataReaderAP3D
+from data_loader.dataset import Dataset, MultimodalTestSet
 
-"""
-AP3D骨骼编号
-"Human3.6M":
-{
-    "0": ["PELVIS"],
-    "1": ["RASI", "RPSI"],
-    "2": ["RKNE"],
-    "3": ["RANK"],
-    "4": ["LASI", "LPSI"],
-    "5": ["LKNE"],
-    "6": ["LANK"],
-    "7": ["Xiphoid", "T10"],
-    "8": ["CLAV"],
-    "9": ["CLAV", "Nasion"],
-    "10": ["Vertex", "EARC"],
-    "11": ["L_Shoulder Joint"],
-    "12": ["LELB"],
-    "13": ["LWRT"],
-    "14": ["R_Shoulder Joint"],
-    "15": ["RELB"],
-    "16": ["RWRT"]
-}
-"""
+MAX_VAL = 2.1
+MAX_JOINT_RANGE = 2.0
+
+
+def load_ap3d_sequences(data_root, split):
+    root = os.path.join(data_root, 'athlete_pose_3d_v3')
+    file_split = 'train' if split == 'train' else 'valid'
+    meta = joblib.load(os.path.join(root, f'{file_split}_meta_fps.joblib'), mmap_mode='r')
+    pose_cam = np.load(os.path.join(root, f'{file_split}_joint_3d_camera_fps.npy'), mmap_mode='r')
+
+    video_ids = meta['videoid']
+    sequences, invalid = [], 0
+    for vid in np.unique(video_ids):
+        seq = pose_cam[video_ids == vid].astype(np.float32) / 1000.0
+        seq = seq - seq[:, 0:1, :]
+        if not np.max(np.abs(seq)) < MAX_JOINT_RANGE:
+            invalid += 1
+            continue
+        sequences.append(seq / MAX_VAL)
+    print(f'AthletePose3D {file_split}: {len(sequences)} sequences ({invalid} discarded)')
+    return sequences
+
 
 class DatasetAP3D(Dataset):
-    def __init__(self, mode, t_his=15, t_pred=60, actions='all', use_vel=False, **kwargs):
-        self.use_vel = use_vel
-        super().__init__(mode, t_his, t_pred, actions='all', **kwargs)
+    def __init__(self, mode, t_his=15, t_pred=60, data_root='data'):
+        self.data_root = data_root
+        super().__init__(mode, t_his, t_pred)
 
-    def prepare_data(self, **kwargs):
-        self.kept_joints = np.arange(17)
-        self.skeleton = Skeleton(
-            parents=[-1, 0, 1, 2, 0, 4, 5, 0, 7, 8, 9, 8, 11, 12, 8, 14, 15],
-            joints_left=[4, 5, 6, 11, 12, 13],  # 左髋、左膝、左踝、左肩、左肘、左腕
-            joints_right=[1, 2, 3, 14, 15, 16]  # 右髋、右膝、右踝、右肩、右肘、右腕
-        )
-        # self.skeleton.gen_adj_mat()
-
-        # 纯List存储所有序列
-        self.data = []
-        reader = DataReaderAP3D()
-        raw_data = reader.get_train_sequences() if self.mode == 'train' else reader.get_test_sequences()
-
-        for seq in raw_data:
-            seq = seq[:, self.kept_joints, :].astype(np.float32)
-            # seq = seq / 1000.0  # 单位转换
-            # seq = seq - seq[:, 0:1, :]  #  根节点归一化
-
-            if self.use_vel:
-                vel = np.diff(seq, axis=0, prepend=seq[:1])
-                seq = np.concatenate([seq, vel], axis=-1)
-
-            if seq.shape[0] >= self.t_total:
-                self.data.append(np.ascontiguousarray(seq))
-
-        print(f"✅ AP3D-{self.mode} 序列数: {len(self.data)} | 纯List存储")
+    def prepare_data(self):
+        self.data = [np.ascontiguousarray(seq) for seq in load_ap3d_sequences(self.data_root, self.mode)
+                     if seq.shape[0] >= self.t_total]
 
     def sample(self):
         seq = random.choice(self.data)
-        max_start = seq.shape[0] - self.t_total
-        start = random.randint(0, max_start)
+        start = random.randint(0, seq.shape[0] - self.t_total)
         return seq[start:start + self.t_total][None]
 
     def sampling_generator(self, num_samples=50000, batch_size=256, aug=True):
         for _ in range(num_samples // batch_size):
-            batch = [self.sample() for _ in range(batch_size)]
-            batch = np.concatenate(batch, axis=0)
-            seq_len = batch.shape[1]
-            # mask_indices = np.random.randint(int(seq_len * 0.08), int(seq_len * 0.92), int(seq_len * 0.2))
-            # mask = np.array([i not in mask_indices for i in range(seq_len)], dtype=bool)
-
+            batch = np.concatenate([self.sample() for _ in range(batch_size)], axis=0)
             if aug:
-                if np.random.rand() > 0.5:
+                if np.random.rand() > 0.5:  # random rotation about the vertical axis
                     theta = np.random.uniform(0, 2 * np.pi)
                     rot = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
                     batch[..., :2] = np.matmul(batch[..., :2], rot.T)
             yield batch
 
-    def iter_generator(self, step=15):
-        # 🔥 迭代步长统一15
-        for seq in self.data:
-            for i in range(0, seq.shape[0] - self.t_total + 1, step):
-                yield seq[None, i:i + self.t_total]
 
-
-if __name__ == '__main__':
-    """全链路性能测试：Train加载时间 <0.1秒"""
-    import time
-
-    # 测试训练模式加载速度
-    start = time.time()
-    ap3d_train = DatasetAP3D('train', t_his=15, t_pred=60, use_vel=False)
-    load_time = time.time() - start
-    print(f"Train全链路加载时间: {load_time:.3f}秒")
-
-    # 测试采样速度
-    # start = time.time()
-    # for _ in range(1000):
-    #     ap3d_train.sample()
-    # sample_time = (time.time() - start) / 1000
-    # print(f"单次采样时间: {sample_time * 1000:.3f}毫秒")
-    generator = ap3d_train.iter_generator(step=15)
-    i = 0
-    all_bone_lengths = []
-    for data in generator:
-        x = torch.from_numpy(data).reshape(-1, 17, 3)
-
-        # 计算所有骨骼的长度
-        parent = [-1, 0, 1, 2, 0, 4, 5, 0, 7, 8, 9, 7, 11, 12, 8, 11, 7]
-        for j in range(1, 17):
-            vec = x[:, j] - x[:, parent[j]]
-            length = torch.norm(vec, dim=-1)
-            all_bone_lengths.append(length)
-
-    all_bone_lengths = torch.cat(all_bone_lengths)
-    mean_len = all_bone_lengths.mean().item()
-    std_len = all_bone_lengths.std().item()
-    print("="*70)
-    print("骨骼长度方差诊断")
-    print("="*70)
-    print(f"平均骨骼长度: {mean_len:.4f}")
-    print(f"骨骼长度标准差: {std_len:.4f}")
-    print(f"变异系数: {std_len / mean_len * 100:.1f}%")
-    print("="*70)
-
+def DatasetAP3D_multi(t_his, t_pred, data_root, multimodal_path, data_candi_path):
+    """Test windows of every AthletePose3D test sequence (stride t_his) + multimodal GT."""
+    return MultimodalTestSet(load_ap3d_sequences(data_root, 'test'), t_his, t_pred,
+                             os.path.join(data_root, multimodal_path), os.path.join(data_root, data_candi_path),
+                             name='ap3d')

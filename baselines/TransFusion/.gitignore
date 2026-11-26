@@ -1,0 +1,4 @@
+results/
+inference/
+weights/**/*.pt
+__pycache__/

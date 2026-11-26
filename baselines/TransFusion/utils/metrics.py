@@ -1,79 +1,17 @@
-from scipy.spatial.distance import pdist
+"""Evaluation metrics shared by all methods compared in the AthleticFlow paper.
+
+APD, ADE, FDE, MMADE, MMFDE follow HumanMAC/TransFusion. AEE (average end-effector
+error: mean ADE of LWrist/RWrist/LFoot/RFoot of the best-of-K sample) and ABE (average
+bone-length error of the best-of-K sample) are derived in utils/evaluation.py from
+`joint_ade` / `bone_ade` returned by compute_all_metrics_detailed(). Jitter is the
+mean jerk magnitude (third finite difference, unit/s^3) of the best-of-K sample.
+"""
 import numpy as np
 import torch
 
-
-def compute_all_metrics(pred, gt, gt_multi):
-    """
-    calculate all metrics
-
-    Args:
-        pred: candidate prediction, shape as [50, t_pred, 3 * joints_num]
-        gt: ground truth, shape as [1, t_pred, 3 * joints_num]
-        gt_multi: multi-modal ground truth, shape as [multi_modal, t_pred, 3 * joints_num]
-
-    Returns:
-        diversity, ade, fde, mmade, mmfde, ade_m,fde_m, mmade_m, mmfde_m, ade_w, fde_w, mmade_w, mmfde_w
-    """
-    if pred.shape[0] == 1:
-        diversity = torch.tensor(0.0, device=pred.device)
-    else:
-        diversity = torch.pdist(pred.reshape(pred.shape[0], -1)).mean(-1).mean(-1)
-
-
-    gt_multi = torch.from_numpy(gt_multi).to('cuda')
-    gt_multi_gt = torch.cat([gt_multi, gt], dim=0)
-
-    gt_multi_gt = gt_multi_gt[None, ...]
-    pred = pred[:, None, ...]
-
-    diff_multi = pred - gt_multi_gt
-    dist = torch.linalg.norm(diff_multi, dim=3)
-
-    mmfde, _ = dist[:, :-1, -1].min(dim=0)
-    mmfde = mmfde.mean()
-    mmade, _ = dist[:, :-1].mean(dim=2).min(dim=0)
-    mmade = mmade.mean()
-
-    ade, _ = dist[:, -1].mean(dim=1).min(dim=0)
-    fde, _ = dist[:, -1, -1].min(dim=0)
-    ade = ade.mean()
-    fde = fde.mean()
-
-    mmfde_w, _ = dist[:, :-1, -1].max(dim=0)
-    mmfde_w = mmfde_w.mean()
-    mmade_w, _ = dist[:, :-1].mean(dim=2).max(dim=0)
-    mmade_w = mmade_w.mean()
-
-    ade_w, _ = dist[:, -1].mean(dim=1).max(dim=0)
-    fde_w, _ = dist[:, -1, -1].max(dim=0)
-    ade_w = ade_w.mean()
-    fde_w = fde_w.mean()
-
-    mmfde_m, _ = dist[:, :-1, -1].median(dim=0)
-    mmfde_m = mmfde_m.mean()
-    mmade_m, _ = dist[:, :-1].mean(dim=2).median(dim=0)
-    mmade_m = mmade_m.mean()
-
-    ade_m, _ = dist[:, -1].mean(dim=1).median(dim=0)
-    fde_m, _ = dist[:, -1, -1].median(dim=0)
-    ade_m = ade_m.mean()
-    fde_m = fde_m.mean()
-
-    return diversity, ade, fde, mmade, mmfde, ade_m,fde_m, mmade_m, mmfde_m, ade_w, fde_w, mmade_w, mmfde_w
-
-# Both edge lists below are indexed AFTER the root/pelvis joint has already
-# been dropped from the data (matching the `[..., 1:, :]` slicing used
-# throughout data loading), i.e. into H36M_JOINT_NAMES / SMPL_23_JOINT_NAMES.
-# The previous versions of these lists (still present in TransFusion-main's
-# sibling repos HumanMAC/SMRNet-main before this fix) had bugs from treating
-# the dropped root's children as if they connected to each other:
-# - H36M_SKELETON_EDGES had two spurious extra edges, (0,3) and (0,6),
-#   connecting RHip-LHip and RHip-Spine -- bones that don't physically exist
-#   (RHip/LHip/Spine were only ever connected via the now-removed root).
-# - SMPL_23_EDGES used an entirely different, non-matching index scheme
-#   (index 0 treated as a hub/root rather than as LHip), silently computing
-#   bone-length error between the wrong joint pairs for the 'wp' dataset.
+# Both edge lists are indexed AFTER the root/pelvis joint has been dropped
+# (matching the `[..., 1:, :]` slicing used throughout data loading), i.e. into
+# H36M_JOINT_NAMES / SMPL_23_JOINT_NAMES.
 H36M_SKELETON_EDGES = [
     (0, 1), (1, 2),        # RHip-RKnee-RFoot
     (3, 4), (4, 5),        # LHip-LKnee-LFoot
@@ -91,40 +29,10 @@ SMPL_23_EDGES = [
     (8, 13), (13, 16), (16, 18), (18, 20), (20, 22),  # Spine3-RCollar-RShoulder-RElbow-RWrist-RHand
 ]
 
-WP24_NAMES = [
-    "Pelvis",
-    "LHip", "RHip", "Spine1",
-    "LKnee", "RKnee", "Spine2",
-    "LAnkle", "RAnkle", "Spine3",
-    "LFoot", "RFoot",
-    "Neck", "LCollar", "RCollar",
-    "Head",
-    "LShoulder", "RShoulder",
-    "LElbow", "RElbow",
-    "LWrist", "RWrist",
-    "LHand", "RHand"
-] # lfoot j9 rfoot j10
-
-
-WP24_NAMES = [
-    "Pelvis",
-    "LHip", "RHip", "Spine1",
-    "LKnee", "RKnee", "Spine2",
-    "LAnkle", "RAnkle", "Spine3",
-    "LFoot", "RFoot",
-    "Neck", "LCollar", "RCollar",
-    "Head",
-    "LShoulder", "RShoulder",
-    "LElbow", "RElbow",
-    "LWrist", "RWrist",
-    "LHand", "RHand"
-] # lfoot j9 rfoot j10
-
 DATASET_FPS = {
     'ap': 60,
     'ap3d': 60,
     'wp': 50,
-    'h36m': 50,
 }
 
 H36M_JOINT_NAMES = [
@@ -141,14 +49,14 @@ SMPL_23_JOINT_NAMES = [
 ]
 
 def get_joint_names(dataset_name, num_joints):
-    if dataset_name in ('h36m', 'ap3d', 'ap') and num_joints == len(H36M_JOINT_NAMES):
+    if dataset_name in ('ap3d', 'ap') and num_joints == len(H36M_JOINT_NAMES):
         return list(H36M_JOINT_NAMES)
     if dataset_name == 'wp' and num_joints == len(SMPL_23_JOINT_NAMES):
         return list(SMPL_23_JOINT_NAMES)
     return [f'J{i}' for i in range(num_joints)]
 
 def get_skeleton_edges(dataset_name):
-    if dataset_name in ('h36m', 'ap3d', 'ap'):
+    if dataset_name in ('ap3d', 'ap'):
         return H36M_SKELETON_EDGES
     elif dataset_name == 'wp':
         return SMPL_23_EDGES
@@ -166,7 +74,7 @@ def get_bone_names(dataset_name, num_joints):
     return names
 
 def _finite_diff(x, order, fps):
-    """x: [..., T, J, 3] -> [..., T-order, J, 3]，已乘 fps**order"""
+    """x: [..., T, J, 3] -> [..., T-order, J, 3], multiplied by fps**order"""
     for _ in range(order):
         x = x[..., 1:, :, :] - x[..., :-1, :, :]
     return x * (float(fps) ** order)
@@ -175,9 +83,9 @@ def _finite_diff(x, order, fps):
 def compute_accel_jitter(xyz, fps, hist_xyz=None, gt_xyz=None):
     """
     xyz:      [..., T, J, 3]
-    hist_xyz: [..., H, J, 3] 可选，拼在前面以覆盖 his/pred 接缝
-    gt_xyz:   [..., T, J, 3] 可选，提供则额外返回 accel_error_joint
-    返回的每一项形状为 [..., J]
+    hist_xyz: [..., H, J, 3] optional, prepended so that the history/prediction seam is covered
+    gt_xyz:   [..., T, J, 3] optional, if given accel_error_joint is also returned
+    every returned entry has shape [..., J]
     """
     if hist_xyz is not None:
         xyz = torch.cat([hist_xyz, xyz], dim=-3)
@@ -201,15 +109,8 @@ def compute_accel_jitter(xyz, fps, hist_xyz=None, gt_xyz=None):
     return out
 
 
-def _select_best_sample(pred, gt):
-    """pred: [b, s, T, D], gt: [b, T, D] -> [b, T, D]（ADE 口径）"""
-    dist = torch.linalg.norm(pred - gt[:, None], dim=-1)
-    idx = dist.mean(dim=2).argmin(dim=1)
-    return pred[torch.arange(pred.shape[0], device=pred.device), idx]
-
-
 def get_fps(dataset_name, cfg=None):
-    """cfg.fps 优先；否则按数据集默认值"""
+    """cfg.fps if set, otherwise the dataset default"""
     if cfg is not None:
         fps = getattr(cfg, 'fps', None)
         if fps:
@@ -254,7 +155,7 @@ def compute_joint_angle(a, b, c):
     """
     a-b-c
 
-    返回点b处夹角
+    returns the angle at joint b
 
     a,b,c:
         [...,3]
@@ -350,7 +251,7 @@ def compute_all_metrics_detailed(pred, gt, gt_multi, num_joints, dataset_name,
         [M, T, D]
 
     hist:
-        [H, D] 可选，历史段最后若干帧，用于覆盖 his/pred 接缝处的加速度与抖动
+        [H, D] optional, last frames of the history, prepended so that acceleration and jitter cover the history/prediction seam
     """
 
     if pred.shape[0] == 1:

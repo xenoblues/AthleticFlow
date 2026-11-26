@@ -1,3 +1,5 @@
+# Derived from the HumanMAC denoiser (https://github.com/LinghaoChan/HumanMAC, MIT License,
+# Copyright (c) 2023 Ling-Hao CHEN) as re-implemented in a research fork of TransFusion; see NOTICE.md.
 import torch
 import torch.nn.functional as F
 from torch import layer_norm, nn
@@ -5,7 +7,7 @@ import numpy as np
 
 import math
 
-from utils import *
+
 
 
 class EMA:

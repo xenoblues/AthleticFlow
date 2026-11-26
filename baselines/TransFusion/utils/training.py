@@ -1,10 +1,14 @@
 import copy
+import os
 import time
-from torch import optim, nn
-from utils.visualization import render_animation
-from utils import *
-from utils.evaluation import compute_stats, compute_stats_cs
-from utils.pose_gen import pose_generator
+
+import numpy as np
+import torch
+from torch import nn, optim
+
+from utils.evaluation import compute_stats_cs
+from utils.logger import AverageMeter
+from utils.util import padding_traj
 
 
 class EMA:
@@ -36,25 +40,8 @@ class EMA:
 
 
 class Trainer:
-    def __init__(self,
-                 model,
-                 diffusion,
-                 dataset,
-                 cfg,
-                 logger,
-                 tb_logger,
-                 multimodal_dict):
+    def __init__(self, model, diffusion, dataset, cfg, logger, tb_logger, multimodal_dict):
         super().__init__()
-
-        self.generator_val = None
-        self.val_losses = None
-        self.t_s = None
-        self.train_losses = None
-        self.criterion = None
-        self.lr_scheduler = None
-        self.optimizer = None
-        self.generator_train = None
-
         self.model = model
         self.diffusion = diffusion
         self.dataset = dataset
@@ -66,13 +53,8 @@ class Trainer:
         self.iter = 0
         self.lrs = []
 
-        if self.cfg.ema is True:
-            self.ema = EMA(0.995)
-            self.ema_model = copy.deepcopy(model).eval().requires_grad_(False)
-            self.ema_setup = (self.cfg.ema, self.ema, self.ema_model)
-        else:
-            self.ema_model = None
-            self.ema_setup = None
+        self.ema = EMA(0.995)
+        self.ema_model = copy.deepcopy(model).eval().requires_grad_(False)
 
     def loop(self):
         self.before_train()
@@ -90,6 +72,17 @@ class Trainer:
                                                            gamma=self.cfg.gamma)
         self.criterion = nn.MSELoss()
 
+    def _prepare(self, traj_np):
+        # (N, t_his + t_pred, joints, 3) -> (N, t_his + t_pred, 3 * (joints - 1)): drop the root joint
+        traj_np = traj_np[..., 1:, :].reshape([traj_np.shape[0], self.cfg.t_his + self.cfg.t_pred, -1])
+        traj = torch.tensor(traj_np, device=self.cfg.device, dtype=self.cfg.dtype)
+        traj_pad = padding_traj(traj, self.cfg.padding, self.cfg.idx_pad, self.cfg.zero_index)
+        traj_dct = torch.matmul(self.cfg.dct_m_all[:self.cfg.n_pre], traj)
+        traj_dct_mod = torch.matmul(self.cfg.dct_m_all[:self.cfg.n_pre], traj_pad)
+        if np.random.random() > self.cfg.mod_train:
+            traj_dct_mod = None
+        return traj_dct, traj_dct_mod
+
     def before_train_step(self):
         self.model.train()
         self.generator_train = self.dataset['train'].sampling_generator(num_samples=self.cfg.num_data_sample,
@@ -101,24 +94,9 @@ class Trainer:
     def run_train_step(self):
         for traj_np in self.generator_train:
             with torch.no_grad():
-                # (N, t_his + t_pre, joints, 3) -> (N, t_his + t_pre, 3 * (joints - 1))
-                # discard the root joint and combine xyz coordinate
+                traj_dct, traj_dct_mod = self._prepare(traj_np)
 
-                if not self.cfg.remove_root:
-                    traj_np = traj_np.reshape([traj_np.shape[0], self.cfg.t_his + self.cfg.t_pred, -1])
-                else:
-                    traj_np = traj_np[..., 1:, :].reshape([traj_np.shape[0], self.cfg.t_his + self.cfg.t_pred, -1])
-
-                traj = tensor(traj_np, device=self.cfg.device, dtype=self.cfg.dtype)
-                traj_pad = padding_traj(traj, self.cfg.padding, self.cfg.idx_pad, self.cfg.zero_index)
-                traj_dct = torch.matmul(self.cfg.dct_m_all[:self.cfg.n_pre], traj)
-                traj_dct_mod = torch.matmul(self.cfg.dct_m_all[:self.cfg.n_pre], traj_pad)
-
-                if np.random.random() > self.cfg.mod_train:
-                    traj_dct_mod = None
-
-            # train
-            t = self.diffusion.sample_timesteps(traj.shape[0]).to(self.cfg.device)
+            t = self.diffusion.sample_timesteps(traj_dct.shape[0]).to(self.cfg.device)
             x_t, noise = self.diffusion.noise_motion(traj_dct, t)
             predicted_noise = self.model(x_t, t, mod=traj_dct_mod)
             loss = self.criterion(predicted_noise, noise)
@@ -126,25 +104,16 @@ class Trainer:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-
-            args_ema, ema, ema_model = self.ema_setup[0], self.ema_setup[1], self.ema_setup[2]
-
-            if args_ema is True:
-                ema.step_ema(ema_model, self.model)
+            self.ema.step_ema(self.ema_model, self.model)
 
             self.train_losses.update(loss.item())
             self.tb_logger.add_scalar('Loss/train', loss.item(), self.iter)
 
-            del loss, traj, traj_dct, traj_dct_mod, traj_pad, traj_np
-
     def after_train_step(self):
         self.lr_scheduler.step()
         self.lrs.append(self.optimizer.param_groups[0]['lr'])
-        self.logger.info(
-            '====> Epoch: {} Time: {:.2f} Train Loss: {} lr: {:.5f}'.format(self.iter,
-                                                                            time.time() - self.t_s,
-                                                                            self.train_losses.avg,
-                                                                            self.lrs[-1]))
+        self.logger.info('====> Epoch: {} Time: {:.2f} Train Loss: {} lr: {:.5f}'.format(
+            self.iter, time.time() - self.t_s, self.train_losses.avg, self.lrs[-1]))
 
     def before_val_step(self):
         self.model.eval()
@@ -157,56 +126,19 @@ class Trainer:
     def run_val_step(self):
         for traj_np in self.generator_val:
             with torch.no_grad():
-                # (N, t_his + t_pre, joints, 3) -> (N, t_his + t_pre, 3 * (joints - 1))
-                # discard the root joint and combine xyz coordinate
-
-                if not self.cfg.remove_root:
-                    traj_np = traj_np.reshape([traj_np.shape[0], self.cfg.t_his + self.cfg.t_pred, -1])
-                else:
-                    traj_np = traj_np[..., 1:, :].reshape([traj_np.shape[0], self.cfg.t_his + self.cfg.t_pred, -1])
-
-                traj = tensor(traj_np, device=self.cfg.device, dtype=self.cfg.dtype)
-                traj_pad = padding_traj(traj, self.cfg.padding, self.cfg.idx_pad,
-                                        self.cfg.zero_index)
-                # [n_pre × (t_his + t_pre)] matmul [(t_his + t_pre) × 3 * (joints - 1)]
-                traj_dct = torch.matmul(self.cfg.dct_m_all[:self.cfg.n_pre], traj)
-                traj_dct_mod = torch.matmul(self.cfg.dct_m_all[:self.cfg.n_pre], traj_pad)
-
-                if np.random.random() > self.cfg.mod_train:
-                    traj_dct_mod = None
-
-                t = self.diffusion.sample_timesteps(traj.shape[0]).to(self.cfg.device)
+                traj_dct, traj_dct_mod = self._prepare(traj_np)
+                t = self.diffusion.sample_timesteps(traj_dct.shape[0]).to(self.cfg.device)
                 x_t, noise = self.diffusion.noise_motion(traj_dct, t)
                 predicted_noise = self.model(x_t, t, mod=traj_dct_mod)
                 loss = self.criterion(predicted_noise, noise)
-
                 self.val_losses.update(loss.item())
                 self.tb_logger.add_scalar('Loss/val', loss.item(), self.iter)
 
-            del loss, traj, traj_dct, traj_dct_mod, traj_pad, traj_np
-
     def after_val_step(self):
-        self.logger.info('====> Epoch: {} Time: {:.2f} Val Loss: {}'.format(self.iter,
-                                                                            time.time() - self.t_s,
-                                                                            self.val_losses.avg))
+        self.logger.info('====> Epoch: {} Time: {:.2f} Val Loss: {}'.format(
+            self.iter, time.time() - self.t_s, self.val_losses.avg))
         if self.cfg.save_model_interval > 0 and (self.iter + 1) % self.cfg.save_model_interval == 0:
-            if self.cfg.ema is True:
-                torch.save(self.ema_model.state_dict(),
-                           os.path.join(self.cfg.model_path, f"ckpt_ema_{self.iter + 1}.pt"))
-            else:
-                torch.save(self.model.state_dict(), os.path.join(self.cfg.model_path, f"ckpt_{self.iter + 1}.pt"))
+            torch.save(self.ema_model.state_dict(), os.path.join(self.cfg.model_path, f"ckpt_ema_{self.iter + 1}.pt"))
 
         if self.iter % self.cfg.save_metrics_interval == 0 and self.iter != 0:
-            if self.cfg.ema is True:
-                if self.cfg.dataset == 'ap' or self.cfg.dataset == 'ap3d' or self.cfg.dataset == 'wp':
-                    compute_stats_cs(self.diffusion, self.multimodal_dict, self.ema_model, self.logger, self.cfg)
-                else:
-                    compute_stats(self.diffusion, self.multimodal_dict, self.ema_model, self.logger, self.cfg)
-            else:
-                if self.cfg.dataset == 'ap' or self.cfg.dataset == 'ap3d' or self.cfg.dataset == 'wp':
-                    compute_stats_cs(self.diffusion, self.multimodal_dict, self.model, self.logger, self.cfg)
-                else:
-                    compute_stats(self.diffusion, self.multimodal_dict, self.model, self.logger, self.cfg)
-
-
-
+            compute_stats_cs(self.diffusion, self.multimodal_dict, self.ema_model, self.logger, self.cfg)
