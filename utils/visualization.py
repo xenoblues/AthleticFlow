@@ -10,8 +10,6 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, writers
 from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
-import pickle
-from vpython import *
 import time
 
 from datetime import datetime
@@ -216,7 +214,7 @@ def render_animation(skeleton, poses_generator, algos, t_hist, fix_0=True, azim=
                     #         tx.remove()
                     #     for tx in ax.texts:
                     #         tx.remove()
-                    # ax.text(pos[j, 0], pos[j, 1], pos[j,https://zjwsite.github.io/ 2], f'{j}', None)
+                    # ax.text(pos[j, 0], pos[j, 1], pos[j, 2], f'{j}', None)
 
     def show_animation():
         nonlocal anim
@@ -313,6 +311,6 @@ def render_animation(skeleton, poses_generator, algos, t_hist, fix_0=True, azim=
     save()
     show_animation()
     # plt.show(block=False)
-    plt.close('all''all')
+    plt.close('all')
     
     # save_figs()

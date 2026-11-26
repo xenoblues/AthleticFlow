@@ -1,0 +1,29 @@
+# Supplementary: 4 chain-bias heads (default 2)
+dataset: 'ap3d'
+t_his: 15
+t_pred: 60
+padding: 'LastFrame'
+# training
+batch_size: 1024
+num_epoch: 1001
+num_data_sample: 50000
+num_val_data_sample: 5000
+lr: 1.e-3
+mod_train: 0.5          # probability of keeping the condition during training (classifier-free guidance)
+mod_test: 1.
+# temporal representation: first n_pre coefficients of the t_his + t_pred frames
+use_dct: True
+n_pre: 15
+# network
+model_name: 'AF'
+num_layers: 6
+num_heads: 8
+latent_dims: 512
+dropout: 0.2
+# sampling
+cfg_scale: 0.5
+# AthleticFlow ablation switches
+use_ila: True            # internal-limb attention
+use_anchor: True         # torso-anchored kinematic chains
+bias_mode: 'both'        # chain-relative bias: both | static | dynamic | none
+n_chain_heads: 4         # attention heads with chain-relative bias (second half of the blocks)

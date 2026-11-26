@@ -1,10 +1,7 @@
 import os
-import sys
-import types
 import numpy as np
 from data_loader.dataset import Dataset
 from data_loader.skeleton import Skeleton
-import torch
 
 
 class DatasetWP_multi(Dataset):
@@ -35,7 +32,7 @@ class DatasetWP_multi(Dataset):
 
         self.multimodal_path = kwargs.get('multimodal_path', None)
         self.data_candi_path = kwargs.get('data_candi_path', None)
-        self.raw_data_path = kwargs.get('raw_data_path', kwargs.get('raw_data_path ', None))
+        self.raw_data_path = kwargs.get('raw_data_path', None)
 
         if self.multimodal_path is not None:
             self.multimodal_path = os.path.join(self.root_path, self.multimodal_path)
@@ -59,14 +56,14 @@ class DatasetWP_multi(Dataset):
 
     def _load_multimodal_data(self):
         if self.multimodal_path is None:
-            multimodal_path = os.path.join(self.root_path, f'data/worldpose/multimodal/t_his{self.t_his}_1_thre0.500_t_pred{self.t_pred}_thre0.100_index_filterd.npz')
-            candi_path = os.path.join(self.root_path, f'data/worldpose/multimodal/data_candi_t_his{self.t_his}_t_pred{self.t_pred}_skiprate{self.step}.npz')
+            multimodal_path = os.path.join(self.root_path, 'data', 'worldpose', 'multimodal', f't_his{self.t_his}_1_thre0.500_t_pred{self.t_pred}_thre0.100_index_filterd.npz')
+            candi_path = os.path.join(self.root_path, 'data', 'worldpose', 'multimodal', f'data_candi_t_his{self.t_his}_t_pred{self.t_pred}_skiprate{self.step}.npz')
         else:
             multimodal_path = self.multimodal_path
             candi_path = self.data_candi_path
 
         if self.raw_data_path is None:
-            raw_data_path = os.path.join(self.root_path, 'data/worldpose/wp_data_py3.npz')
+            raw_data_path = os.path.join(self.root_path, 'data', 'worldpose', 'wp_data_py3.npz')
         else:
             raw_data_path = self.raw_data_path
 
@@ -165,8 +162,8 @@ class DatasetWP_multi(Dataset):
     def _init_skeleton(self):
         self.skeleton = Skeleton(
             parents=[-1, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 9, 9, 12, 13, 14, 16, 17, 18, 19, 20, 21],
-            joints_left=[1, 4, 5, 6, 16, 17, 18, 19],
-            joints_right=[2, 7, 8, 9, 20, 21, 22, 23]
+            joints_left=[1, 4, 7, 10, 13, 16, 18, 20, 22],
+            joints_right=[2, 5, 8, 11, 14, 17, 19, 21, 23]
         )
         self.kept_joints = np.arange(24)
 
@@ -226,53 +223,6 @@ class DatasetWP_multi(Dataset):
 
         return multi_traj.astype(np.float32)
 
-    def __len__(self):
-        if self.mode == 'train':
-            return len(self.data_candi)
-        return len(self.test_clips)
-
-    def __getitem__(self, idx):
-        if self.mode == 'train':
-            candi_idx = np.random.randint(len(self.data_candi))
-            traj = self.data_candi[candi_idx].astype(np.float32).copy()
-            multi_traj = np.repeat(traj[None], self.n_modality, axis=0).astype(np.float32)
-        else:
-            global_idx = int(idx) % len(self.test_clips)
-            traj = self.test_clips[global_idx].astype(np.float32).copy()
-            multi_traj = self._get_multimodal_candidates(global_idx, traj, fix_n_modality=True)
-
-        traj = self._add_velocity(traj)
-        multi_traj = self._add_velocity(multi_traj)
-
-        return traj.astype(np.float32), multi_traj.astype(np.float32)
-
-    def sample(self, n_modality=None):
-        if n_modality is None:
-            n_modality = self.n_modality
-
-        idx = np.random.randint(len(self))
-        traj, multi_traj = self.__getitem__(idx)
-
-        return traj[None].astype(np.float32), multi_traj[:n_modality].astype(np.float32)
-
-    def sampling_generator(self, num_samples=1000, batch_size=8, n_modality=None):
-        if n_modality is None:
-            n_modality = self.n_modality
-
-        for _ in range(num_samples // batch_size):
-            batch_traj = []
-            batch_multi = []
-
-            for _ in range(batch_size):
-                traj, multi_traj = self.sample(n_modality=n_modality)
-                batch_traj.append(traj[0])
-                batch_multi.append(multi_traj[:n_modality])
-
-            batch_traj = np.asarray(batch_traj, dtype=np.float32)
-            batch_multi = np.asarray(batch_multi, dtype=np.float32)
-
-            yield batch_traj, batch_multi
-
     def iter_generator(self, step=None):
         """
         Evaluation generator.
@@ -294,17 +244,3 @@ class DatasetWP_multi(Dataset):
 
     def get_stats(self):
         return np.ones(3, dtype=np.float32) * float(self.max_abs), np.zeros(3, dtype=np.float32)
-
-
-if __name__ == "__main__":
-    print("=" * 60)
-    print("测试多模态 DatasetWP_multi")
-    print("=" * 60)
-    ds_multi = DatasetWP_multi(mode='test', use_vel=False)
-    print(f"多模态测试集大小: {len(ds_multi)}")
-    itergen = ds_multi.sampling_generator(num_samples=51200, batch_size=1024, n_modality=5)
-    max_coord = -np.inf
-    for input_traj, future_trajs in itergen:
-        print(input_traj.shape, future_trajs.shape)
-        max_coord = max(max_coord, np.max(np.abs(input_traj)))
-    print(max_coord)

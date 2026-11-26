@@ -6,14 +6,9 @@ from scipy.sparse import csr_matrix
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 root_path = os.path.dirname(current_path)
-SMPL_MODEL_PATH  = r"data/worldpose/models/SMPL_NEUTRAL.pkl"
-SMPL_MODEL_PATH  = os.path.join(root_path, SMPL_MODEL_PATH )
-SAVE_PARAMS = r"models/worldpose/smpl_standard_params.npz"
-SAVE_PARAMS = os.path.join(root_path, SAVE_PARAMS)
-WORLDPOSE_DIR = r"data/worldpose/poses"
-WORLDPOSE_DIR = os.path.join(root_path, WORLDPOSE_DIR)
-OUTPUT_PATH = r"data/worldpose/wp_data.npz"
-OUTPUT_PATH = os.path.join(root_path, OUTPUT_PATH)
+SMPL_MODEL_PATH = os.path.join(root_path, "data", "worldpose", "models", "SMPL_NEUTRAL.pkl")
+WORLDPOSE_DIR = os.path.join(root_path, "data", "worldpose", "poses")
+OUTPUT_PATH = os.path.join(root_path, "data", "worldpose", "wp_data.npz")
 TEST_CLIPS = [
     "ARG_FRA_182345", "ARG_FRA_201902",
     "BRA_KOR_231503", "CRO_MOR_1800400",

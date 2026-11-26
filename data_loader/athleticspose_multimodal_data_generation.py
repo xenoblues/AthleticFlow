@@ -12,8 +12,9 @@ K_NEIGHBORS = 50
 THRE_HIS = 0.5
 THRE_PRED = 0.1
 
-DATA_PATH = r"D:\MyPyProjects\HumanMAC\data\AthleticsPose"
-SAVE_DIR = r"D:\MyPyProjects\HumanMAC\data\AthleticsPose\multimodal"
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_PATH = os.path.join(ROOT_DIR, "data", "AthleticsPose")
+SAVE_DIR = os.path.join(DATA_PATH, "multimodal")
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 

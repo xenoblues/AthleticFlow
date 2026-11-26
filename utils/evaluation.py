@@ -1,538 +1,282 @@
+import os
 import csv
+import time
 import numpy as np
 import pandas as pd
-import ptwt
 import torch
-
-from utils.metrics import *
 from tqdm import tqdm
-from utils import *
+
+from utils.logger import AverageMeter
+from utils.metrics import (compute_all_metrics_detailed, get_fps, get_joint_names, get_bone_names,
+                           get_skeleton_edges, get_end_effector_indices)
 from utils.script import sample_preprocessing
-import time
 
 tensor = torch.tensor
-DoubleTensor = torch.DoubleTensor
-FloatTensor = torch.FloatTensor
-LongTensor = torch.LongTensor
-ByteTensor = torch.ByteTensor
-ones = torch.ones
-zeros = torch.zeros
 
-BONE_NAMES = [
-    "RHip-RKnee",
-    "RKnee-RFoot",
-
-    "LHip-LKnee",
-    "LKnee-LFoot",
-
-    "Hip-Spine",
-    "Spine-Thorax",
-    "Thorax-Neck",
-    "Neck-Head",
-
-    "Thorax-LShoulder",
-    "LShoulder-LElbow",
-    "LElbow-LWrist",
-
-    "Thorax-RShoulder",
-    "RShoulder-RElbow",
-    "RElbow-RWrist"
-]
+K_SAMPLES = 50  # number of predicted futures per test window
 
 
-def clips_prediction(traj_data, cfg, diffusion, encoder_model, model_select, mode_dict):
-    traj_est = traj_data.clone()
-    clip_num = (cfg.t_total - cfg.clip_his) // cfg.clip_pred  # 总clip数量
-    clip_res = (cfg.t_total - cfg.clip_his) % cfg.clip_pred
-    nopred_clip_num = (cfg.t_his - cfg.clip_his) // cfg.clip_pred  # 不用做预测的clip数量
-    nopred_res = (cfg.t_his - cfg.clip_his) % cfg.clip_pred
-    his_clip_num = cfg.t_his // cfg.clip_his  # 有可用历史真值的clip
-    last_feature = None
-    pred_prev_clip = None
-    if clip_res:
-        clip_num += 1
-    if nopred_res:
-        nopred_clip_num += 1
-    for c in range(clip_num):
-        if clip_res:
-            if c < clip_num - 1:
-                ground_clip = traj_est[:, c * cfg.clip_pred: c * cfg.clip_pred + cfg.clip_total, :].clone()
-            else:
-                ground_clip = traj_est[:, -cfg.clip_total, :].clone()
-        else:
-            ground_clip = traj_est[:, c * cfg.clip_pred: c * cfg.clip_pred + cfg.clip_total, :].clone()
-
-        if c < nopred_clip_num:  # 历史帧不进行预测，融合clip特征
-            if c == 0:
-                pass
-            else:
-                global_feature = encoder_model(prev_clip).detach()
-                if last_feature is None:
-                    last_feature = global_feature
-                else:
-                    last_feature = (global_feature + last_feature) / 2.0
-            """
-            elif nopred_clip_num <= c < his_clip_num:
-                global_feature = encoder_model(prev_clip).detach()
-                last_feature = (global_feature + last_feature) / 2.0
-    
-                # last his frame padding
-                his = cfg.t_his - c * cfg.clip_his
-                clip_cond = ground_clip[:, :, :].clone()
-                mask = torch.zeros_like(ground_clip).to(cfg.device)
-                his_range = [i for i in range(his)]
-                mask[:, his_range, :] = 1
-    
-                pred_prev_clip = diffusion.sample_ddim_autoregression(model_select,
-                                                                      clip_cond,
-                                                                      last_feature,
-                                                                      mode_dict,
-                                                                      mask)
-                print('clip: ', c, 'traj_est.shape: ', traj_est.shape, 'pred_prev_clip.shape: ', pred_prev_clip.shape)
-                traj_est[:, cfg.t_his: c * cfg.clip_his + cfg.clip_total - cfg.t_his, :] \
-                    = pred_prev_clip[:, -(c * cfg.clip_his + cfg.clip_total - cfg.t_his):, :]
-            """
-        else:
-            # 输入条件帧和全局特征进行预测
-            global_feature = encoder_model(prev_clip).detach()
-            last_feature = (global_feature + last_feature) / 2.0
-
-            if c * cfg.clip_pred < cfg.t_his < c * cfg.clip_pred + cfg.clip_total:
-                his = cfg.t_his - c * cfg.clip_pred
-            else:
-                his = cfg.clip_his
-            his_ind = [i for i in range(his)]
-
-            clip_cond = ground_clip[:, :, :].clone()
-            mask = torch.zeros_like(ground_clip).to(cfg.device)
-            mask[:, his_ind, :] = 1
-            # mask包含在mode_dict中
-            pred_prev_clip = diffusion.sample_ddim_autoregression(model_select,
-                                                                  clip_cond,
-                                                                  last_feature,
-                                                                  mode_dict,
-                                                                  mask)
-            if clip_res:
-                if c != clip_num:
-                    if c * cfg.clip_pred < cfg.t_his < c * cfg.clip_pred + cfg.clip_total:
-                        traj_est[:, cfg.t_his: c * cfg.clip_his + cfg.clip_total - cfg.t_his, :] = pred_prev_clip[
-                            :, -(c * cfg.clip_his + cfg.clip_total - cfg.t_his):, :]
-                    else:
-                        traj_est[:, c * cfg.clip_his: c * cfg.clip_his + cfg.clip_total, :] = pred_prev_clip
-                else:
-                    traj_est[: -cfg.clip_his:, :] = pred_prev_clip
-            else:
-                # print('c:', c, traj_est.shape, pred_prev_clip.shape)
-                if c * cfg.clip_pred < cfg.t_his < c * cfg.clip_pred + cfg.clip_total:
-                    traj_est[:, cfg.t_his: c * cfg.clip_pred + cfg.clip_total, :] = pred_prev_clip[
-                        :, -(c * cfg.clip_pred + cfg.clip_total - cfg.t_his):, :]
-                else:
-                    traj_est[:, c * cfg.clip_his: c * cfg.clip_his + cfg.clip_total, :] = pred_prev_clip
-
-        if c <= nopred_clip_num:
-            prev_clip = ground_clip
-        else:
-            # clip包含已知历史帧，则
-            if (c - 1) * cfg.clip_pred < cfg.t_his < (c - 1) * cfg.clip_pred + cfg.clip_total:
-                gt_len = cfg.t_his - (c - 1) * cfg.clip_his
-                prev_clip = torch.cat((ground_clip[:gt_len], pred_prev_clip[gt_len:]))
-            else:
-                prev_clip = pred_prev_clip
-
-    return traj_est
-
-
-def compute_stats(generator_model, multimodal_dict, model, logger, cfg, encoder_model=None, save_results=False):
+def compute_stats(generator_model, multimodal_dict, model, logger, cfg, save_results=False):
     """
+    Evaluate K = 50 predicted futures for every test window.
+
     The GPU is strictly needed because we need to give predictions for multiple samples in parallel and repeat for
     several (K=50) times.
+    Printed summary: APD, ADE, FDE, MMADE, MMFDE, AEE (mean ADE of the wrists and feet), ABE (mean bone-length
+    error) and jitter (best sample), all of the best-of-K sample except APD / jitter_all.
     """
 
-    def get_prediction(data, model_select, mode='whole', slice_num=5):
-        if cfg.dataset == 'assemble' or not cfg.remove_root:
-            traj_np = data.reshape([data.shape[0], cfg.t_total, -1])
-            traj = tensor(traj_np, device=cfg.device, dtype=torch.float32)
-        else:
-            traj_np = data[..., 1:, :].transpose([0, 2, 3, 1])
-            traj = tensor(traj_np, device=cfg.device, dtype=torch.float32)
-            traj = traj.reshape([traj.shape[0], -1, traj.shape[-1]]).transpose(1, 2)
-
-        # traj.shape: [*, t_his + t_pre, 3 * joints_num]
-        traj_est = torch.zeros(traj.shape, device=cfg.device, dtype=torch.float32)
-
-        if mode == 'whole':
-            mode_dict, traj_dct, traj_dct_cond, vel_acc_pad, traj_pad = sample_preprocessing(traj, cfg, mode='metrics')
-
-            if cfg.generator == 'diffusion':
-                sampled_motion = generator_model.sample_ddim(model_select,
-                                                             traj_dct,
-                                                             traj_dct_cond,
-                                                             mode_dict,
-                                                             vel_acc_pad=vel_acc_pad)
-
-            elif cfg.generator == 'flow_matching':
-                generator_model.update_sampling_model(model)
-                if not cfg.res_fm:
-                    sampled_motion = generator_model.sample_fm(mode_dict, traj_dct, traj_dct_cond, traj_pad,
-                                                               pre_inject=True)
-                else:
-                    sampled_motion = generator_model.sample_res_fm(mode_dict, traj_dct, traj_dct_cond, traj_pad,
-                                                                   pre_inject=True)
-
-            if cfg.use_dct:
-                if cfg.mode != 'fine_tune' and cfg.mode != 'ft_eval':
-                    traj_est = torch.matmul(cfg.idct_m_all[:, :cfg.n_pre], sampled_motion)
-                    # traj_est = apply_limb_chain_direction_oracle(traj_est, traj, num_joints=cfg.joint_num)
-                else:
-                    traj_est = sampled_motion
-                # traj_est = cfg.hdct.decode(sampled_motion)
-
-            elif cfg.use_dwt:
-                inputs = []
-                for i in range(0, len(cfg.dwt_lens)):
-                    inputs.append(torch.zeros(sampled_motion.shape[0], cfg.dwt_lens[i], sampled_motion.shape[2],
-                                              device=cfg.device))
-
-                if cfg.dwt_lens[0] >= cfg.n_pre:  # 41 > 30
-                    inputs[0][:, :cfg.n_pre, :] = sampled_motion.clone()
-                else:  # 21 < 30
-                    inputs[0][:, :, :] = sampled_motion[:, :cfg.dwt_lens[0], :].clone()
-                    diff_len = cfg.n_pre - cfg.dwt_lens[0]
-                    inputs[1][:, :diff_len, :] = sampled_motion[:, cfg.dwt_lens[0]:, :].clone()
-                traj_est = ptwt.waverec(inputs, wavelet=cfg.dwt_wave, axis=1)[:, :cfg.t_total, :]
-
-            elif cfg.use_fft:
-                zeros = torch.zeros((sampled_motion.shape[0], cfg.t_total - cfg.n_pre, sampled_motion.shape[2]),
-                                    device=cfg.device, dtype=torch.float32)
-                dft_coeffs = torch.cat((sampled_motion, zeros), dim=1).cpu().numpy()
-                traj_est = torch.tensor(np.fft.ifft(dft_coeffs, axis=1).real, device=cfg.device, dtype=torch.float32)
-
-            else:
-                traj_est = sampled_motion
-
-        else:
-            n = traj.shape[0] // slice_num
-            for s in range(slice_num):
-                if s != slice_num - 1:
-                    traj_tmp = traj[s * n:(s + 1) * n, :, :]
-                else:
-                    traj_tmp = traj[s * n:, :, :]
-
-                # traj_dct padding过后的dct系数
-                mode_dict, traj_dct, traj_dct_cond, vel_acc_pad, traj_pad = sample_preprocessing(traj_tmp, cfg,
-                                                                                                 mode='metrics')
-
-                if cfg.generator == 'diffusion':
-                    sampled_motion = generator_model.sample_ddim(model_select,
-                                                                 traj_dct,
-                                                                 traj_dct_cond,
-                                                                 mode_dict,
-                                                                 vel_acc_pad=vel_acc_pad)
-                elif cfg.generator == 'flow_matching':
-                    generator_model.update_sampling_model(model)
-                    if not cfg.res_fm:
-                        sampled_motion = generator_model.sample_fm(mode_dict, traj_dct, traj_dct_cond, traj_pad,
-                                                                   pre_inject=True)
-                    else:
-                        sampled_motion = generator_model.sample_res_fm(mode_dict, traj_dct, traj_dct_cond, traj_pad,
-                                                                       pre_inject=True)
-
-                if cfg.use_dct:
-                    if cfg.mode != 'fine_tune' and cfg.mode != 'ft_eval':
-                        traj_est_tmp = torch.matmul(cfg.idct_m_all[:, :cfg.n_pre], sampled_motion)
-                        # traj_est = apply_limb_chain_direction_oracle(traj_est, traj, num_joints=cfg.joint_num)
-                    else:
-                        traj_est = sampled_motion
-
-                elif cfg.use_dwt:
-                    inputs = []
-                    for i in range(0, len(cfg.dwt_lens)):
-                        inputs.append(torch.zeros(sampled_motion.shape[0], cfg.dwt_lens[i], sampled_motion.shape[2],
-                                                  device=cfg.device))
-
-                    if cfg.dwt_lens[0] >= cfg.n_pre:  # 41 > 30
-                        inputs[0][:, :cfg.n_pre, :] = sampled_motion.clone()
-                    else:  # 21 < 30
-                        inputs[0][:, :, :] = sampled_motion[:, :cfg.dwt_lens[0], :].clone()
-                        diff_len = cfg.n_pre - cfg.dwt_lens[0]
-                        inputs[1][:, :diff_len, :] = sampled_motion[:, cfg.dwt_lens[0]:, :].clone()
-                    traj_est = ptwt.waverec(inputs, wavelet=cfg.dwt_wave, axis=1)[:, :cfg.t_total, :]
-                elif cfg.use_fft:
-                    zeros = torch.zeros((sampled_motion.shape[0], cfg.t_total - cfg.n_pre, sampled_motion.shape[2]),
-                                        device=cfg.device, dtype=torch.float32)
-                    dft_coeffs = torch.cat((sampled_motion, zeros), dim=1).cpu().numpy()
-                    traj_est = torch.tensor(np.fft.ifft(dft_coeffs, axis=1).real, device=cfg.device,
-                                            dtype=torch.float32)
-                else:
-                    traj_est_tmp = sampled_motion
-
-                if s != slice_num - 1:
-                    traj_est[s * n:(s + 1) * n, :, :] = traj_est_tmp
-                else:
-                    traj_est[s * n:, :, :] = traj_est_tmp
-
-        # traj_est.shape (K, 125, 48)
-        traj_est = traj_est.cpu().numpy()
-        traj_est = traj_est[None, ...]
-        if not cfg.remove_root:
-            traj_est = traj_est[..., 3:]
-
-        # if cfg.kin:
-        #     traj_est = cfg.kin.decode(traj_est)
-
-        return traj_est
-
-    def get_prediction_autoregression(data, model_select, mode='whole', slice_num=10):
+    def get_prediction(data, mode='whole', slice_num=10):
+        # root joint removed: [N, t_total, J+1, 3] -> [N, t_total, 3 * J]
         traj_np = data[..., 1:, :].transpose([0, 2, 3, 1])
         traj = tensor(traj_np, device=cfg.device, dtype=torch.float32)
         traj = traj.reshape([traj.shape[0], -1, traj.shape[-1]]).transpose(1, 2)
-        # traj.shape: [*, t_his + t_pre, 3 * joints_num]
-        mode_dict, traj_dct, traj_dct_cond, traj_pad = sample_preprocessing(traj, cfg, mode='autoregression')
 
-        traj_est = clips_prediction(traj_dct, cfg, generator_model, encoder_model, model_select, mode_dict)
+        traj_est = torch.zeros(traj.shape, device=cfg.device, dtype=torch.float32)
 
-        # traj_est.shape (K, 125, 48)
-        traj_est = traj_est.cpu().numpy()
-        traj_est = traj_est[None, ...]
-        return traj_est
+        if mode == 'whole':
+            slices = [(0, traj.shape[0])]
+        else:
+            n = traj.shape[0] // slice_num
+            slices = [(s * n, (s + 1) * n if s != slice_num - 1 else traj.shape[0]) for s in range(slice_num)]
+
+        generator_model.update_sampling_model(model)
+        for st, ed in slices:
+            mode_dict, traj_dct, traj_dct_cond, traj_pad = sample_preprocessing(traj[st:ed], cfg, mode='metrics')
+            sampled_motion = generator_model.sample_fm(mode_dict, traj_dct, traj_dct_cond, traj_pad, pre_inject=True)
+            if cfg.use_dct:
+                traj_est[st:ed] = torch.matmul(cfg.idct_m_all[:, :cfg.n_pre], sampled_motion)
+            else:
+                traj_est[st:ed] = sampled_motion
+
+        # [1, N, t_total, 3 * J]
+        return traj_est.cpu().numpy()[None, ...]
 
     st = time.time()
-    if multimodal_dict is None:
-        gt_group = None
-        data_group = None
-        traj_gt_arr = None
-        num_samples = None
-        dataset_multi_test = None
-    else:
-        gt_group = multimodal_dict['gt_group']
-        data_group = multimodal_dict['data_group']
-        traj_gt_arr = multimodal_dict['traj_gt_arr']
-        num_samples = multimodal_dict['num_samples']
-        dataset_multi_test = multimodal_dict['dataset_multi_test']
+    gt_group = multimodal_dict['gt_group']
+    data_group = multimodal_dict['data_group']
+    traj_gt_arr = multimodal_dict['traj_gt_arr']
+    num_samples = multimodal_dict['num_samples']
 
-    stats_names = ['APD', 'ADE', 'FDE', 'MMADE', 'MMFDE']
+    stats_names = ['APD', 'ADE', 'FDE', 'MMADE', 'MMFDE',
+                   'jitter', 'jitter_all', 'jitter_gt',
+                   'accel', 'accel_gt', 'accel_error']
     stats_meter = {x: AverageMeter() for x in stats_names}
+
+    fps = get_fps(cfg.dataset, cfg)
+    save_per_window = getattr(cfg, 'save_per_window', False)
+    save_windows = set(int(x) for x in str(getattr(cfg, 'save_windows', '') or '').split(',') if x.strip())
 
     joint_ade_sum = None
     joint_fde_sum = None
     time_ade_sum = None
-    joint_time_error_sum = None
-    bone_ade_sum = torch.zeros(cfg.joint_num - 1, device='cuda')
-    bone_fde_sum = torch.zeros(cfg.joint_num - 1, device='cuda')
-    bone_time_sum = torch.zeros(cfg.t_pred,  device='cuda')
-    angle_ade_sum = {
-        "RKnee": 0.0,
-        "LKnee": 0.0,
-        "LElbow": 0.0,
-        "RElbow": 0.0
-    }
+    joint_jitter_sum = None
+    joint_accel_error_sum = None
+    n_bones = len(get_skeleton_edges(cfg.dataset))
+    bone_ade_sum = torch.zeros(n_bones, device='cuda')
+    angle_ade_sum = {"RKnee": 0.0, "LKnee": 0.0, "LElbow": 0.0, "RElbow": 0.0}
 
-    angle_fde_sum = {
-        "RKnee": 0.0,
-        "LKnee": 0.0,
-        "LElbow": 0.0,
-        "RElbow": 0.0
-    }
-
-    K = 50
     pred = []
-    pred_all = []
-    for i in tqdm(range(0, K), position=0):
-        # It generates a prediction for all samples in the test set
-        # So we need loop for K times
-        if not cfg.autoregression:
-            if torch.cuda.is_available():
-                # 获取当前GPU的空闲/总显存（单位：字节）
-                free_memory_bytes, total_memory_bytes = torch.cuda.mem_get_info()
-                free_memory_gb = free_memory_bytes / (1024 ** 3)  # 转换为 GB
-
-                # 显存阈值：≥12GB 用 whole（大模式），<12GB 用 sliced（显存节省模式）
-                # 可根据你的显卡自由调整阈值：16GB显卡设12，24GB设20
-                MEM_THRESHOLD = 12
-                if free_memory_gb >= MEM_THRESHOLD:
-                    mode_ = 'whole'
-                else:
-                    mode_ = 'sliced'
-            else:
-                # 无GPU(CPU环境)默认使用节省显存的 sliced 模式
-                mode_ = 'sliced'
-
-            pred_i_nd = get_prediction(data_group, model, mode=mode_, slice_num=10)
-
-            if cfg.dct_norm_enable:
-                pred_i_nd = dataset_multi_test.denormalize(pred_i_nd)
-
+    for i in tqdm(range(0, K_SAMPLES), position=0):
+        # one prediction for every test window per iteration
+        if torch.cuda.is_available():
+            # memory-saving sliced mode on GPUs with less than 12 GB free memory
+            # (the sampled noise, hence the numbers, differ slightly between both modes)
+            free_memory_bytes, total_memory_bytes = torch.cuda.mem_get_info()
+            mode_ = 'whole' if free_memory_bytes / (1024 ** 3) >= 12 else 'sliced'
         else:
-            pred_i_nd = get_prediction_autoregression(data_group, model, mode='whole')
+            mode_ = 'sliced'
 
-        pred.append(pred_i_nd)
+        pred.append(get_prediction(data_group, mode=mode_, slice_num=10))
 
-        if i == K - 1:  # in last iteration, concatenate all candidate pred
-            pred = np.concatenate(pred, axis=0)
-            # pred [50, 5187, 125, 48] in h36m
-            pred_all.append(pred)
-            pred = pred[:, :, cfg.t_his:, :]
-            # Use GPU to accelerate
-            try:
-                gt_group = torch.from_numpy(gt_group).to('cuda')
-            except:
-                pass
-            try:
-                pred = torch.from_numpy(pred).to('cuda')
-            except:
-                pass
+    # pred [K, N, t_total, 3 * J]
+    pred = np.concatenate(pred, axis=0)
+    pred_all = pred if save_results else None
+    if cfg.jitter_seam == 'observed':
+        # the last 3 observed ground-truth frames (identical for every sample and method)
+        _gh = data_group[:, max(cfg.t_his - 3, 0):cfg.t_his, 1:, :].reshape(data_group.shape[0], -1, pred.shape[-1])
+        hist = np.ascontiguousarray(np.broadcast_to(_gh[None], (pred.shape[0],) + _gh.shape)).astype(pred.dtype)
+    else:
+        # 'predicted': the model's reconstruction of the last 3 observed frames
+        hist = pred[:, :, max(cfg.t_his - 3, 0):cfg.t_his, :]
+    pred = pred[:, :, cfg.t_his:, :]
+    # Use GPU to accelerate
+    gt_group = torch.from_numpy(gt_group).to('cuda')
+    pred = torch.from_numpy(pred).to('cuda')
+    hist = torch.from_numpy(hist).to('cuda')
 
-            # pred [50, 5187, 100, 48]
-            for j in range(num_samples):
+    per_window = {k: [] for k in ('APD', 'ADE', 'FDE', 'MMADE', 'MMFDE', 'jitter', 'jitter_all', 'jitter_gt',
+                                  'accel', 'accel_gt', 'accel_error', 'joint_ade', 'bone_ade',
+                                  'ee_vpeak_gt', 'ee_vpeak_best', 'ee_vpeak_all',
+                                  'ee_apeak_gt', 'ee_apeak_best', 'ee_apeak_all')}
+    selected = {}
+    ee_idx = get_end_effector_indices(cfg.dataset, cfg.joint_num)
+    # end effectors of the per-window peak speed / acceleration, columns of the ee_* arrays in per_window.npz:
+    # ap3d / ap: LWrist, RWrist, RFoot, LFoot; wp: LWrist, RWrist, LFoot, RFoot
+    ee_peak_idx = [19, 20, 9, 10] if cfg.dataset == 'wp' else [12, 15, 2, 5]
 
-                metrics = compute_all_metrics_detailed(
-                    pred[:, j, :, :],
-                    gt_group[j][np.newaxis, ...],
-                    traj_gt_arr[j],
-                    num_joints=cfg.joint_num,
-                    dataset_name=cfg.dataset
-                )
+    def _peaks(x):
+        # peak speed / acceleration of the end effectors over the predicted frames: [..., 4]
+        v = torch.linalg.norm((x[..., 1:, :, :] - x[..., :-1, :, :]) * fps, dim=-1)[..., ee_peak_idx]
+        a = torch.linalg.norm((x[..., 2:, :, :] - 2 * x[..., 1:-1, :, :] + x[..., :-2, :, :]) * fps ** 2,
+                              dim=-1)[..., ee_peak_idx]
+        return v.amax(dim=-2), a.amax(dim=-2)
 
-                stats_meter['APD'].update(metrics['APD'])
-                stats_meter['ADE'].update(metrics['ADE'])
-                stats_meter['FDE'].update(metrics['FDE'])
-                stats_meter['MMADE'].update(metrics['MMADE'])
-                stats_meter['MMFDE'].update(metrics['MMFDE'])
+    # pred [K, N, t_pred, 3 * J]
+    for j in range(num_samples):
 
-                if joint_ade_sum is None:
-                    joint_ade_sum = metrics['joint_ade'].clone()
-                    joint_fde_sum = metrics['joint_fde'].clone()
-                    time_ade_sum = metrics['time_ade'].clone()
-                    joint_time_error_sum = metrics['joint_time_error'].clone()
-                else:
-                    joint_ade_sum += metrics['joint_ade']
-                    joint_fde_sum += metrics['joint_fde']
-                    time_ade_sum += metrics['time_ade']
-                    joint_time_error_sum += metrics['joint_time_error']
+        metrics = compute_all_metrics_detailed(
+            pred[:, j, :, :],
+            gt_group[j][np.newaxis, ...],
+            traj_gt_arr[j],
+            num_joints=cfg.joint_num,
+            dataset_name=cfg.dataset,
+            fps=fps,
+            hist=hist[0, j]
+        )
 
-                bone_ade_sum += metrics['bone_ade']
-                bone_fde_sum += metrics['bone_fde']
-                bone_time_sum += metrics['bone_time_error']
+        for stats in stats_names:
+            stats_meter[stats].update(metrics[stats])
 
-                for k in angle_ade_sum.keys():
-                    angle_ade_sum[k] += metrics["angle_ade"][k]
-                    angle_fde_sum[k] += metrics["angle_fde"][k]
+        if save_per_window:
+            for _k in per_window:
+                if not _k.startswith('ee_'):
+                    _v = metrics[_k]
+                    per_window[_k].append(_v.detach().float().cpu().numpy() if torch.is_tensor(_v)
+                                          else np.asarray(_v, dtype=np.float32))
+            _p = pred[:, j].reshape(pred.shape[0], cfg.t_pred, -1, 3).float()
+            _g = gt_group[j].reshape(cfg.t_pred, -1, 3).float()
+            _bi = torch.linalg.norm(_p - _g[None], dim=-1).mean(dim=(1, 2)).argmin()
+            _vg, _ag = _peaks(_g)
+            _vb, _ab = _peaks(_p[_bi])
+            _va, _aa = _peaks(_p)
+            for _k, _v in (('ee_vpeak_gt', _vg), ('ee_vpeak_best', _vb), ('ee_vpeak_all', _va.mean(0)),
+                           ('ee_apeak_gt', _ag), ('ee_apeak_best', _ab), ('ee_apeak_all', _aa.mean(0))):
+                per_window[_k].append(_v.detach().cpu().numpy())
 
-            for stats in stats_names:
-                str_stats = f'{stats}: ' + ' '.join([f'{stats_meter[stats].avg.item():.4f}'])
-                logger.info(str_stats)
+        if j in save_windows:
+            selected[f'pred_{j}'] = pred[:, j].float().cpu().numpy()
+            selected[f'data_{j}'] = np.asarray(data_group[j])
 
-            pred = []
-            joint_ade_mean = joint_ade_sum / num_samples
-            joint_fde_mean = joint_fde_sum / num_samples
-            time_ade_mean = time_ade_sum / num_samples
-            joint_time_error_mean = joint_time_error_sum / num_samples
-            bone_ade_mean = bone_ade_sum / num_samples
-            bone_fde_mean = bone_fde_sum / num_samples
-            bone_time_mean = bone_time_sum / num_samples
+        if joint_ade_sum is None:
+            joint_ade_sum = metrics['joint_ade'].clone()
+            joint_fde_sum = metrics['joint_fde'].clone()
+            time_ade_sum = metrics['time_ade'].clone()
+            joint_jitter_sum = metrics['joint_jitter'].clone()
+            joint_accel_error_sum = metrics['joint_accel_error'].clone()
+        else:
+            joint_ade_sum += metrics['joint_ade']
+            joint_fde_sum += metrics['joint_fde']
+            time_ade_sum += metrics['time_ade']
+            joint_jitter_sum += metrics['joint_jitter']
+            joint_accel_error_sum += metrics['joint_accel_error']
 
-            if cfg.joint_num == 16:
-                joint_names = [
-                    'RHip',
-                    'RKnee',
-                    'RFoot',
-                    'LHip',
-                    'LKnee',
-                    'LFoot',
-                    'Spine',
-                    'Thorax',
-                    'Neck',
-                    'Head',
-                    'LShoulder',
-                    'LElbow',
-                    'LWrist',
-                    'RShoulder',
-                    'RElbow',
-                    'RWrist'
-                ]
-            else:
-                joint_names = [f'J{i}' for i in range(cfg.joint_num)]
+        bone_ade_sum += metrics['bone_ade']
 
-            logger.info('=' * 80)
-            logger.info('Joint ADE')
-            logger.info('=' * 80)
+        for k in angle_ade_sum.keys():
+            angle_ade_sum[k] += metrics["angle_ade"][k]
 
-            for name, err in zip(joint_names, joint_ade_mean.cpu().numpy()):
-                logger.info(f'{name:<15}: {err:.6f}')
+    joint_ade_mean = joint_ade_sum / num_samples
+    joint_fde_mean = joint_fde_sum / num_samples
+    time_ade_mean = time_ade_sum / num_samples
+    joint_jitter_mean = joint_jitter_sum / num_samples
+    joint_accel_error_mean = joint_accel_error_sum / num_samples
+    bone_ade_mean = bone_ade_sum / num_samples
 
-            logger.info('=' * 80)
-            logger.info('Joint FDE')
-            logger.info('=' * 80)
+    joint_names = get_joint_names(cfg.dataset, cfg.joint_num)
+    joint_ade_np = joint_ade_mean.cpu().numpy()
+    bone_ade_np = bone_ade_mean.cpu().numpy()
+    aee = float(np.mean(joint_ade_np[ee_idx]))
+    abe = float(np.mean(bone_ade_np))
 
-            for name, err in zip(joint_names, joint_fde_mean.cpu().numpy()):
-                logger.info(f'{name:<15}: {err:.6f}')
+    for stats in stats_names[:5]:
+        logger.info(f'{stats}: {stats_meter[stats].avg.item():.4f}')
+    logger.info(f'AEE: {aee:.4f}')
+    logger.info(f'ABE: {abe:.4f}')
+    for stats in stats_names[5:]:
+        logger.info(f'{stats}: {stats_meter[stats].avg.item():.4f}')
 
-            joint_err_np = joint_ade_mean.cpu().numpy()
+    def log_table(title, names, values, fmt='.6f'):
+        logger.info('=' * 80)
+        logger.info(title)
+        logger.info('=' * 80)
+        for name, err in zip(names, values):
+            logger.info(f'{name:<15}: {err:{fmt}}')
 
-            idx = np.argsort(joint_err_np)[::-1]
+    log_table('Joint ADE', joint_names, joint_ade_np)
+    log_table('Joint FDE', joint_names, joint_fde_mean.cpu().numpy())
+    log_table('Joint Jitter (unit/s^3)', joint_names, joint_jitter_mean.cpu().numpy())
+    log_table('Joint Accel Error (unit/s^2)', joint_names, joint_accel_error_mean.cpu().numpy())
 
-            logger.info('=' * 80)
-            logger.info('Worst Joint ADE')
-            logger.info('=' * 80)
-            for k in range(min(5, len(idx))):
-                j = idx[k]
-                logger.info(f'{joint_names[j]:<15}: ' f'{joint_err_np[j]:.6f}')
+    idx = np.argsort(joint_ade_np)[::-1][:5]
+    log_table('Worst Joint ADE', [joint_names[j] for j in idx], joint_ade_np[idx])
+    jitter_np = joint_jitter_mean.cpu().numpy()
+    idx = np.argsort(jitter_np)[::-1][:5]
+    log_table('Worst Joint Jitter', [joint_names[j] for j in idx], jitter_np[idx])
 
-            logger.info("=" * 80)
-            logger.info("Bone Length ADE")
-            logger.info("=" * 80)
-            for name, err in zip(BONE_NAMES, bone_ade_mean):
-                logger.info(f"{name:<20}: {err.item():.6f}")
+    logger.info("=" * 80)
+    logger.info("Bone Length ADE")
+    logger.info("=" * 80)
+    for name, err in zip(get_bone_names(cfg.dataset, cfg.joint_num), bone_ade_np):
+        logger.info(f"{name:<20}: {err:.6f}")
 
-            logger.info("=" * 80)
-            logger.info("Joint Angle ADE (degree)")
-            logger.info("=" * 80)
-            for k, v in angle_ade_sum.items():
-                logger.info(f"{k:<10}: {(v / num_samples).item():.4f}")
+    logger.info("=" * 80)
+    logger.info("Joint Angle ADE (degree)")
+    logger.info("=" * 80)
+    for k, v in angle_ade_sum.items():
+        logger.info(f"{k:<10}: {(v / num_samples).item():.4f}")
 
-            logger.info('=' * 80)
-            logger.info('Time ADE')
-            logger.info('=' * 80)
-            time_np = time_ade_mean.cpu().numpy()
-            for t, err in enumerate(time_np):
-                logger.info(f't={t + 1:03d}: ' f'{err:.6f}')
+    logger.info('=' * 80)
+    logger.info('Smoothness (fps=%.1f)' % fps)
+    logger.info('=' * 80)
+    logger.info(f"jitter(best)   : {stats_meter['jitter'].avg.item():.4f}")
+    logger.info(f"jitter(all K)  : {stats_meter['jitter_all'].avg.item():.4f}")
+    logger.info(f"jitter(GT)     : {stats_meter['jitter_gt'].avg.item():.4f}")
+    logger.info(f"accel          : {stats_meter['accel'].avg.item():.4f}")
+    logger.info(f"accel(GT)      : {stats_meter['accel_gt'].avg.item():.4f}")
+    logger.info(f"accel_error    : {stats_meter['accel_error'].avg.item():.4f}")
 
-            et = time.time()
-            logger.info(f'{et - st:.4f} seconds')
+    logger.info('=' * 80)
+    logger.info('Time ADE')
+    logger.info('=' * 80)
+    for t, err in enumerate(time_ade_mean.cpu().numpy()):
+        logger.info(f't={t + 1:03d}: ' f'{err:.6f}')
 
-            file_latest = '%s/stats_latest.csv'
-            file_stat = '%s/stats.csv'
+    et = time.time()
+    logger.info(f'{et - st:.4f} seconds')
 
-            with open(file_latest % cfg.result_dir, 'w') as csv_file:
-                writer = csv.DictWriter(csv_file,fieldnames=['Metric', 'Value'])
-                writer.writeheader()
+    file_latest = '%s/stats_latest.csv'
+    file_stat = '%s/stats.csv'
 
-                for stats, meter in stats_meter.items():
-                    value = meter.avg
+    with open(file_latest % cfg.result_dir, 'w') as csv_file:
+        writer = csv.DictWriter(csv_file, fieldnames=['Metric', 'Value'])
+        writer.writeheader()
+        for stats, meter in stats_meter.items():
+            value = meter.avg
+            if torch.is_tensor(value):
+                value = value.item()
+            writer.writerow({'Metric': stats, 'Value': float(value)})
+        writer.writerow({'Metric': 'AEE', 'Value': aee})
+        writer.writerow({'Metric': 'ABE', 'Value': abe})
 
-                    if torch.is_tensor(value):
-                        value = value.item()
+    df1 = pd.read_csv(file_latest % cfg.result_dir)
+    if not os.path.exists(file_stat % cfg.result_dir):
+        df1.to_csv(file_stat % cfg.result_dir, index=False)
+    else:
+        df2 = pd.read_csv(file_stat % cfg.result_dir)
+        df = pd.concat([df2, df1], axis=1, ignore_index=True)
+        df.to_csv(file_stat % cfg.result_dir, index=False)
 
-                    writer.writerow({'Metric': stats, 'Value': float(value)})
-
-            df1 = pd.read_csv(file_latest % cfg.result_dir)
-
-            if not os.path.exists(file_stat % cfg.result_dir):
-                df1.to_csv(file_stat % cfg.result_dir, index=False)
-            else:
-                df2 = pd.read_csv(file_stat % cfg.result_dir)
-                df = pd.concat([df2, df1], axis=1, ignore_index=True)
-
-                df.to_csv(file_stat % cfg.result_dir, index=False)
-
-            np.save(os.path.join(cfg.result_dir, 'joint_ade.npy'), joint_ade_mean.cpu().numpy())
-            np.save(os.path.join(cfg.result_dir, 'joint_fde.npy'), joint_fde_mean.cpu().numpy())
-            np.save(os.path.join(cfg.result_dir, 'time_ade.npy'), time_ade_mean.cpu().numpy())
-            np.save(os.path.join(cfg.result_dir, 'joint_time_error.npy'), joint_time_error_mean.cpu().numpy())
-
-            if save_results:
-                pred_all = np.concatenate(pred_all, axis=0)
-                np.save(os.path.join(cfg.result_dir, 'pred_all.npy'), pred_all)
-                np.save(os.path.join(cfg.result_dir, 'data_all.npy'), data_group)
-
-
+    np.save(os.path.join(cfg.result_dir, 'joint_ade.npy'), joint_ade_np)
+    np.save(os.path.join(cfg.result_dir, 'joint_fde.npy'), joint_fde_mean.cpu().numpy())
+    np.save(os.path.join(cfg.result_dir, 'time_ade.npy'), time_ade_mean.cpu().numpy())
+    np.save(os.path.join(cfg.result_dir, 'joint_jitter.npy'), jitter_np)
+    np.save(os.path.join(cfg.result_dir, 'joint_accel_error.npy'), joint_accel_error_mean.cpu().numpy())
+    if save_per_window:
+        np.savez_compressed(os.path.join(cfg.result_dir, 'per_window.npz'),
+                            **{k: np.stack(v) for k, v in per_window.items()})
+    if selected:
+        np.savez_compressed(os.path.join(cfg.result_dir, 'selected_windows.npz'), **selected)
+    if save_results:
+        np.save(os.path.join(cfg.result_dir, 'pred_all.npy'), pred_all)
+        np.save(os.path.join(cfg.result_dir, 'data_all.npy'), data_group)

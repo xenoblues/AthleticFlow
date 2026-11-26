@@ -4,11 +4,13 @@ import numpy as np
 from tqdm import tqdm
 from scipy.interpolate import interp1d
 
-from utils import mocap_to_h36m
+from utils.joints import mocap_to_h36m
 
-
-ROOT_RAW_DIR = r"E:\MyPyProjects\HumanMAC\data\AthleticsPose\raw_markers_in_world"
-SAVE_DIR = r"E:\MyPyProjects\HumanMAC\data\AthleticsPose"
+# Raw AthleticsPose marker data (<action>/<subject>/<date>_*.npy) and output directory of train.npz / test.npz.
+# Run from the repository root:  python -m data_loader.preprocess_athletics_pose
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT_RAW_DIR = os.path.join(ROOT_DIR, "data", "AthleticsPose", "raw_markers_in_world")
+SAVE_DIR = os.path.join(ROOT_DIR, "data", "AthleticsPose")
 ACTIONS = ["discus", "hurdle", "javelin", "racewalk", "running", "sd", "shotput", "sprint"]
 TEST_SUBJECTS = ["S00", "S05", "S11", "S12", "S13", "S16", "S17", "S20", "S21", "S22", "S23"]
 
@@ -62,13 +64,13 @@ FPS_MAPPING = {
 }
 
 # Prediction Parameters
-WINDOW_SIZE = 75  # 15历史 + 60未来（60fps对应1.25秒）
-JOINT_NUM = 17  # 17关节拓扑
+WINDOW_SIZE = 75  # 15 observed + 60 predicted frames (1.25 s at 60 fps)
+JOINT_NUM = 17  # H36M-17 joints
 
 # ========================================================================
 
 def cubic_spline_interpolate_30_to_60(seq):
-    """三次样条插值：将30fps序列平滑插值到60fps"""
+    """cubic-spline interpolation of a 30 fps sequence to 60 fps"""
     T, J, C = seq.shape
     seq_60fps = np.zeros((2 * T, J, C), dtype=np.float32)
 
@@ -84,21 +86,21 @@ def cubic_spline_interpolate_30_to_60(seq):
 
 
 def get_file_fps(action, subject, file_name):
-    """从文件名提取日期，查询FPS映射表"""
+    """frame rate of a recording (date taken from the file name)"""
     date = file_name.split('_')[0]
     key = (action, subject, date)
     return FPS_MAPPING.get(key, 60)
 
 
 def load_all_raw_sequences():
-    """加载所有原始序列，自动将30fps插值到60fps，过滤过短序列"""
+    """load all raw sequences, interpolate 30 fps recordings to 60 fps, drop too short sequences"""
     all_sequences = []
     all_subjects = []
     all_actions = []
     all_lengths = []
     fps_stats = {30: 0, 60: 0}
 
-    for action in tqdm(ACTIONS, desc="加载动作数据"):
+    for action in tqdm(ACTIONS, desc="loading actions"):
         action_dir = os.path.join(ROOT_RAW_DIR, action)
         if not os.path.exists(action_dir):
             continue
@@ -115,16 +117,15 @@ def load_all_raw_sequences():
                 file_path = os.path.join(subject_dir, file)
                 seq = np.load(file_path)
                 seq = mocap_to_h36m(seq)
-                print(seq.shape)
-                # 自动修正形状
+                # (T, 51) -> (T, 17, 3)
                 if len(seq.shape) == 2 and seq.shape[1] == JOINT_NUM * 3:
                     seq = seq.reshape(-1, JOINT_NUM, 3)
 
                 if seq.shape[1] != JOINT_NUM or seq.shape[2] != 3:
-                    print(f"跳过格式错误文件：{file_path}")
+                    print(f"skipping file with unexpected shape: {file_path}")
                     continue
 
-                # FPS插值
+                # frame-rate interpolation
                 fps = get_file_fps(action, subject, file)
                 if fps == 30:
                     seq = cubic_spline_interpolate_30_to_60(seq)
@@ -132,9 +133,9 @@ def load_all_raw_sequences():
                 else:
                     fps_stats[60] += 1
 
-                # 过滤过短序列（无法截取75帧窗口）
+                # drop sequences shorter than one window
                 if seq.shape[0] < WINDOW_SIZE:
-                    print(f"跳过过短序列：{file_path}，长度：{seq.shape[0]}")
+                    print(f"skipping short sequence: {file_path}, length {seq.shape[0]}")
                     continue
 
                 all_sequences.append(seq.astype(np.float32))
@@ -142,25 +143,25 @@ def load_all_raw_sequences():
                 all_actions.append(action)
                 all_lengths.append(seq.shape[0])
 
-    print(f"\nFPS统计：30fps序列 {fps_stats[30]} 个，60fps序列 {fps_stats[60]} 个")
-    print(f"序列长度范围：{min(all_lengths)} ~ {max(all_lengths)} 帧")
-    print(f"所有序列已统一为60fps")
+    print(f"\n30 fps sequences: {fps_stats[30]}, 60 fps sequences: {fps_stats[60]}")
+    print(f"sequence length: {min(all_lengths)} - {max(all_lengths)} frames")
+    print("all sequences are at 60 fps")
 
     return all_sequences, all_subjects, all_actions, all_lengths
 
 
 def root_joint_normalize_per_sequence(sequences):
-    """对每个完整序列单独做根节点归一化（减去序列第0帧的根关节）"""
+    """root-relative coordinates (root joint of every frame subtracted)"""
     normalized_sequences = []
     for seq in sequences:
-        root_joint = seq[:, 0:1, :]  # 每个序列第0帧的根关节
+        root_joint = seq[:, 0:1, :]
         normalized_seq = seq - root_joint
         normalized_sequences.append(normalized_seq)
     return normalized_sequences
 
 
 def compute_global_max(sequences):
-    """计算训练集所有坐标的全局最大值"""
+    """maximum absolute coordinate"""
     all_coords = []
     for seq in sequences:
         all_coords.append(np.abs(seq))
@@ -168,12 +169,12 @@ def compute_global_max(sequences):
 
 
 def max_normalize_sequences(sequences, global_max):
-    """对所有序列做全局max归一化"""
+    """divide all sequences by the global maximum"""
     return [seq / global_max for seq in sequences]
 
 
 def split_train_test(sequences, subjects, actions, lengths):
-    """按照原论文划分训练/测试集"""
+    """train / test split by subject as in the AthleticsPose paper"""
     train_mask = ~np.isin(subjects, TEST_SUBJECTS)
     test_mask = np.isin(subjects, TEST_SUBJECTS)
 
@@ -193,31 +194,31 @@ def split_train_test(sequences, subjects, actions, lengths):
 
 
 def main():
-    # 1. 加载所有原始数据并统一FPS到60
+    # 1. load all raw sequences at 60 fps
     all_seqs, all_subs, all_acts, all_lens = load_all_raw_sequences()
-    print(f"\n加载完成：共 {len(all_seqs)} 个完整序列")
+    print(f"\nloaded {len(all_seqs)} sequences")
 
-    # 2. 每个序列单独做根节点归一化
+    # 2. root-relative coordinates
     seqs_root_norm = root_joint_normalize_per_sequence(all_seqs)
-    print("根节点归一化完成")
+    print("root normalization done")
 
-    # 3. 划分训练/测试集
+    # 3. train / test split
     (train_seqs, test_seqs,
      train_subs, test_subs,
      train_acts, test_acts,
      train_lens, test_lens) = split_train_test(seqs_root_norm, all_subs, all_acts, all_lens)
-    print(f"数据集划分：训练集 {len(train_seqs)} 个序列，测试集 {len(test_seqs)} 个序列")
+    print(f"train: {len(train_seqs)} sequences, test: {len(test_seqs)} sequences")
 
-    # 4. 全局max归一化（仅用训练集统计量）
+    # 4. global max normalization (ceiled maximum over the train and test sets)
     global_max_train = math.ceil(compute_global_max(train_seqs))
     global_max_test = math.ceil(compute_global_max(test_seqs))
     print(global_max_train, global_max_test)
     global_max = max(global_max_train, global_max_test)
     train_seqs_norm = max_normalize_sequences(train_seqs, global_max)
     test_seqs_norm = max_normalize_sequences(test_seqs, global_max)
-    print(f"全局max归一化完成，全局最大值：{global_max:.4f}")
+    print(f"global max normalization done, scale {global_max:.4f}")
 
-    # 5. 关键修复：转换为对象数组保存非均匀长度序列
+    # 5. object arrays for sequences of different lengths
     train_seqs_obj = np.empty(len(train_seqs_norm), dtype=object)
     for i, seq in enumerate(train_seqs_norm):
         train_seqs_obj[i] = seq
@@ -226,12 +227,12 @@ def main():
     for i, seq in enumerate(test_seqs_norm):
         test_seqs_obj[i] = seq
 
-    # 6. 保存为npz文件
+    # 6. save
     os.makedirs(SAVE_DIR, exist_ok=True)
 
     np.savez_compressed(
         os.path.join(SAVE_DIR, "train.npz"),
-        trajectories=train_seqs_obj,  # 对象数组，支持非均匀长度
+        trajectories=train_seqs_obj,
         subjects=np.array(train_subs),
         actions=np.array(train_acts),
         lengths=np.array(train_lens),
@@ -253,7 +254,7 @@ def main():
         fps=60
     )
 
-    print(f"\n数据保存成功：{SAVE_DIR}")
+    print(f"\nsaved to {SAVE_DIR}")
     print(f"  - train.npz: {os.path.getsize(os.path.join(SAVE_DIR, 'train.npz')) / 1024 / 1024:.2f} MB")
     print(f"  - test.npz: {os.path.getsize(os.path.join(SAVE_DIR, 'test.npz')) / 1024 / 1024:.2f} MB")
 

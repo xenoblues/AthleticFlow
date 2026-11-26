@@ -14,8 +14,8 @@ class DataReaderAP3D(object):
                  max_val=2.10):
         self.n_frames = n_frames  # 125
         self.sample_stride = sample_stride
-        self.data_stride_train = data_stride_train  # 训练集步长
-        self.data_stride_test = data_stride_test  # 测试集步长
+        self.data_stride_train = data_stride_train
+        self.data_stride_test = data_stride_test
         self.read_confidence = read_confidence
         current_path = os.path.dirname(os.path.abspath(__file__))
         root_path = os.path.dirname(current_path)
@@ -28,19 +28,18 @@ class DataReaderAP3D(object):
         if self.normalize_to_neg1_pos1 and self.max_val is None:
             self._compute_and_save_max_val()
 
-        # 加载：按 VIDEO 分组的 完整原始序列（核心修改）
+        # complete sequences grouped by video
         # st1 = time.time()
         self.dt_dataset = {
             'train': self._load_complete_sequences('train'),
             'test': self._load_complete_sequences('valid')
         }
         # st2 = time.time()
-        # print(f"✅ 完整序列加载完成 | 耗时: {st2 - st1:.3f}s")
 
     def _is_valid_sequence(self, seq):
         """
-        检查序列是否有效（根节点归一化后）
-        返回：True=有效，False=异常
+        check whether a sequence is valid (after root normalization)
+        returns True = valid, False = corrupted
         """
         seq_normalized = seq - seq[:, 0:1, :]
         max_val = np.max(np.abs(seq_normalized))
@@ -50,10 +49,10 @@ class DataReaderAP3D(object):
         max_val_path = os.path.join(self.dt_root, 'ap3d_max_val1.npy')
         if os.path.exists(max_val_path):
             self.max_val = np.load(max_val_path)
-            print(f"✅ 加载全局缩放因子: {self.max_val:.4f}")
+            print(f"loaded global scale: {self.max_val:.4f}")
             return
 
-        print("🔄 计算训练集全局最大值（含异常数据清洗）...")
+        print("computing the global maximum of the training set (corrupted videos removed)...")
         meta = joblib.load(os.path.join(self.dt_root, 'train_meta_fps.joblib'), mmap_mode='r')
         pose_cam = np.load(os.path.join(self.dt_root, 'train_joint_3d_camera_fps.npy'), mmap_mode='r')
 
@@ -66,7 +65,7 @@ class DataReaderAP3D(object):
             seq = pose_cam[video_ids == vid].astype(np.float32)
             seq = seq / 1000.0
 
-            # ===================== 🔥 异常数据清洗 =====================
+            # remove corrupted sequences
             if not self._is_valid_sequence(seq):
                 invalid_count += 1
                 continue
@@ -80,12 +79,12 @@ class DataReaderAP3D(object):
         self.max_val = np.ceil(raw_max * 10) / 10
 
         # np.save(max_val_path, self.max_val)
-        print(f"✅ 异常视频数: {invalid_count}")
-        print(f"✅ 训练集原始极值: {raw_max:.4f}")
-        print(f"✅ 带安全边际最终缩放值: {self.max_val:.4f}")
+        print(f"corrupted videos: {invalid_count}")
+        print(f"raw maximum (train): {raw_max:.4f}")
+        print(f"scale with safety margin: {self.max_val:.4f}")
 
 
-        print("🔄 计算测试集全局最大值...")
+        print("computing the global maximum of the test set...")
         meta = joblib.load(os.path.join(self.dt_root, 'valid_meta_fps.joblib'))
         pose_cam = np.load(os.path.join(self.dt_root, 'valid_joint_3d_camera_fps.npy'), mmap_mode='r')
 
@@ -99,13 +98,13 @@ class DataReaderAP3D(object):
             seq = seq - seq[:, 0:1, :]
             all_poses.append(seq)
 
-        # 计算训练集全局极值 + 安全边际
+        # global maximum + safety margin
         all_poses = np.concatenate(all_poses, axis=0)
         raw_max = np.max(np.abs(all_poses))
         self.max_val = max(self.max_val, np.ceil(raw_max * 10) / 10)
 
-        print(f"✅ 测试集原始极值: {raw_max:.4f}")
-        print(f"✅ 带安全边际最终缩放值: {self.max_val:.4f}")
+        print(f"raw maximum (test): {raw_max:.4f}")
+        print(f"scale with safety margin: {self.max_val:.4f}")
 
 
     def _load_complete_sequences(self, split):
@@ -122,9 +121,9 @@ class DataReaderAP3D(object):
             mask = (video_ids == vid)
             seq = pose_cam[mask].astype(np.float32)
 
-            # ===================== 标准预处理 =====================
+            # millimetre -> metre
             seq = seq / 1000.0
-            # ===================== 🔥 异常数据清洗 =====================
+            # remove corrupted sequences
             if not self._is_valid_sequence(seq):
                 invalid_count += 1
                 continue
@@ -136,18 +135,18 @@ class DataReaderAP3D(object):
 
             sequence_dict[vid] = seq
 
-        print(f"✅ 加载 {split} 序列 | 有效视频: {len(sequence_dict)} | 异常视频: {invalid_count}")
+        print(f"loaded {split} sequences | valid videos: {len(sequence_dict)} | corrupted videos: {invalid_count}")
         return sequence_dict
 
     # ------------------------------
-    # 以下为兼容接口 + 标准调用方法
+    # public interface
     # ------------------------------
     def get_train_sequences(self):
-        """返回训练集所有完整序列列表"""
+        """list of all complete training sequences"""
         return list(self.dt_dataset['train'].values())
 
     def get_test_sequences(self):
-        """返回测试集所有完整序列列表"""
+        """list of all complete test sequences"""
         return list(self.dt_dataset['test'].values())
 
     def inverse_normalize(self, seq):
@@ -155,14 +154,10 @@ class DataReaderAP3D(object):
 
 
 if __name__ == '__main__':
-    """性能测试：DataReaderAP3D 加载时间 <0.1秒"""
+    """loading test"""
     data_reader = DataReaderAP3D(normalize_to_neg1_pos1=True)
     train_data = data_reader.get_train_sequences()
     seq = train_data[0]
-    # print(f"序列形状: {seq.shape}")
-    # print(f"最小值: {np.min(seq):.4f}")
-    # print(f"最大值: {np.max(seq):.4f}")
-    # print(f"根节点坐标（第一帧）: {seq[0, 0, :]}")
 
     # print(f"Train labels shape: {len(train_data)}")
     # min_t = np.inf

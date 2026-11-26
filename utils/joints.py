@@ -253,3 +253,16 @@ joint_index_coco_to_mocap_v2 = {
     15: [mocap_joints_name_to_index["LANK"]],
     16: [mocap_joints_name_to_index["RANK"]],
 }
+
+
+def mocap_to_h36m(mocap_joints):
+    """
+    AthleticsPose motion-capture markers [T, M, 3] -> H36M-17 joints [T, 17, 3]:
+    every H36M joint is the mean of its markers in joint_index_h36m_to_mocap.
+    """
+    import numpy as np
+    mocap_joints = np.asarray(mocap_joints)
+    h36m_joints = np.zeros((mocap_joints.shape[0], len(joint_index_h36m_to_mocap), 3), dtype=mocap_joints.dtype)
+    for h36m_idx, mocap_idx in joint_index_h36m_to_mocap.items():
+        h36m_joints[:, h36m_idx] = mocap_joints[:, mocap_idx].mean(axis=1)
+    return h36m_joints

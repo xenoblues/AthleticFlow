@@ -22,11 +22,10 @@ THRE_PRED = 0.1
 
 current_path = os.path.dirname(os.path.abspath(__file__))
 root_path = os.path.dirname(current_path)
-root_path = current_path
 
-SAVE_DIR = os.path.join(root_path, "data/worldpose/multimodal")
-RAW_MOTION_PATH = os.path.join(root_path, "data/worldpose/wp_data.npz")
-PY3_MOTION_PATH = os.path.join(root_path, "data/worldpose/wp_data_py3.npz")
+SAVE_DIR = os.path.join(root_path, "data", "worldpose", "multimodal")
+RAW_MOTION_PATH = os.path.join(root_path, "data", "worldpose", "wp_data.npz")
+PY3_MOTION_PATH = os.path.join(root_path, "data", "worldpose", "wp_data_py3.npz")
 
 os.makedirs(SAVE_DIR, exist_ok=True)
 
@@ -39,7 +38,7 @@ NUM_JOINTS = 24
 def convert_py2_to_py3():
 
     if os.path.exists(PY3_MOTION_PATH):
-        print("✅ Python3 data already exists.")
+        print("Python3 data already exists.")
         return
 
     print("Converting Python2 dataset...")

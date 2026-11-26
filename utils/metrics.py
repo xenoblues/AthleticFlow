@@ -1,270 +1,178 @@
-from scipy.spatial.distance import pdist
-import numpy as np
 import torch
 
+# Joint indices below are AFTER the root/pelvis joint has been removed from the data.
+# AthletePose3D / AthleticsPose: H36M-17 layout -> 16 joints
+H36M_JOINT_NAMES = [
+    'RHip', 'RKnee', 'RFoot', 'LHip', 'LKnee', 'LFoot',
+    'Spine', 'Thorax', 'Neck', 'Head',
+    'LShoulder', 'LElbow', 'LWrist', 'RShoulder', 'RElbow', 'RWrist',
+]
+
 H36M_SKELETON_EDGES = [
-    (0,1),
-    (1,2),
+    (0, 1), (1, 2),        # RHip-RKnee-RFoot
+    (3, 4), (4, 5),        # LHip-LKnee-LFoot
+    (6, 7), (7, 8), (8, 9),  # Spine-Thorax-Neck-Head
+    (7, 10), (10, 11), (11, 12),  # Thorax-LShoulder-LElbow-LWrist
+    (7, 13), (13, 14), (14, 15),  # Thorax-RShoulder-RElbow-RWrist
+]
 
-    (0,3),
-    (3,4),
-    (4,5),
-
-    (0,6),
-    (6,7),
-    (7,8),
-    (8,9),
-
-    (7,10),
-    (10,11),
-    (11,12),
-
-    (7,13),
-    (13,14),
-    (14,15)
+# WorldPose: SMPL-24 layout -> 23 joints
+SMPL_23_JOINT_NAMES = [
+    'LHip', 'RHip', 'Spine1', 'LKnee', 'RKnee', 'Spine2',
+    'LAnkle', 'RAnkle', 'Spine3', 'LFoot', 'RFoot', 'Neck',
+    'LCollar', 'RCollar', 'Head', 'LShoulder', 'RShoulder',
+    'LElbow', 'RElbow', 'LWrist', 'RWrist', 'LHand', 'RHand',
 ]
 
 SMPL_23_EDGES = [
-
-    # spine
-    (0, 3),
-    (3, 6),
-    (6, 9),
-    (9, 12),
-    (12, 15),
-
-    # left leg
-    (0, 1),
-    (1, 4),
-    (4, 7),
-    (7, 10),
-
-    # right leg
-    (0, 2),
-    (2, 5),
-    (5, 8),
-    (8, 11),
-
-    # left arm
-    (9, 13),
-    (13, 16),
-    (16, 18),
-    (18, 20),
-
-    # right arm
-    (9, 14),
-    (14, 17),
-    (17, 19),
-    (19, 21),
-
-    # head
-    (15, 22),
+    (0, 3), (3, 6), (6, 9),                          # LHip-LKnee-LAnkle-LFoot
+    (1, 4), (4, 7), (7, 10),                         # RHip-RKnee-RAnkle-RFoot
+    (2, 5), (5, 8), (8, 11),                         # Spine1-Spine2-Spine3-Neck
+    (11, 14),                                        # Neck-Head
+    (8, 12), (12, 15), (15, 17), (17, 19), (19, 21),  # Spine3-LCollar-LShoulder-LElbow-LWrist-LHand
+    (8, 13), (13, 16), (16, 18), (18, 20), (20, 22),  # Spine3-RCollar-RShoulder-RElbow-RWrist-RHand
 ]
 
-WP24_NAMES = [
-    "Pelvis",
-    "LHip", "RHip", "Spine1",
-    "LKnee", "RKnee", "Spine2",
-    "LAnkle", "RAnkle", "Spine3",
-    "LFoot", "RFoot",
-    "Neck", "LCollar", "RCollar",
-    "Head",
-    "LShoulder", "RShoulder",
-    "LElbow", "RElbow",
-    "LWrist", "RWrist",
-    "LHand", "RHand"
-] # lfoot j9 rfoot j10
+# end effectors used for the average end-effector error (AEE)
+END_EFFECTOR_NAMES = ('LWrist', 'RWrist', 'LFoot', 'RFoot')
+
+DATASET_FPS = {
+    'ap': 60,
+    'ap3d': 60,
+    'wp': 50,
+}
+
+
+def get_joint_names(dataset_name, num_joints):
+    if dataset_name in ('ap3d', 'ap') and num_joints == len(H36M_JOINT_NAMES):
+        return list(H36M_JOINT_NAMES)
+    if dataset_name == 'wp' and num_joints == len(SMPL_23_JOINT_NAMES):
+        return list(SMPL_23_JOINT_NAMES)
+    return [f'J{i}' for i in range(num_joints)]
+
+
+def get_skeleton_edges(dataset_name):
+    if dataset_name in ('ap3d', 'ap'):
+        return H36M_SKELETON_EDGES
+    elif dataset_name == 'wp':
+        return SMPL_23_EDGES
+    raise ValueError(f'no skeleton edges defined for dataset: {dataset_name}')
+
+
+def get_bone_names(dataset_name, num_joints):
+    jn = get_joint_names(dataset_name, num_joints)
+    return [f'{jn[i]}-{jn[j]}' for i, j in get_skeleton_edges(dataset_name)]
+
+
+def get_end_effector_indices(dataset_name, num_joints):
+    jn = get_joint_names(dataset_name, num_joints)
+    return [jn.index(n) for n in END_EFFECTOR_NAMES]
+
+
+def get_fps(dataset_name, cfg=None):
+    """cfg.fps if given, otherwise the dataset default"""
+    if cfg is not None:
+        fps = getattr(cfg, 'fps', None)
+        if fps:
+            return float(fps)
+    if dataset_name not in DATASET_FPS:
+        raise ValueError(f'no default fps for dataset: {dataset_name}, please set cfg.fps explicitly')
+    return float(DATASET_FPS[dataset_name])
+
+
+def _finite_diff(x, order, fps):
+    """x: [..., T, J, 3] -> [..., T-order, J, 3], multiplied by fps**order"""
+    for _ in range(order):
+        x = x[..., 1:, :, :] - x[..., :-1, :, :]
+    return x * (float(fps) ** order)
+
+
+def compute_accel_jitter(xyz, fps, hist_xyz=None, gt_xyz=None):
+    """
+    xyz:      [..., T, J, 3]
+    hist_xyz: [..., H, J, 3] optional, prepended to cover the observation/prediction seam
+    gt_xyz:   [..., T, J, 3] optional, additionally returns accel_error_joint
+    every returned entry has shape [..., J]
+    """
+    if hist_xyz is not None:
+        xyz = torch.cat([hist_xyz, xyz], dim=-3)
+        if gt_xyz is not None:
+            gt_xyz = torch.cat([hist_xyz, gt_xyz], dim=-3)
+
+    T = xyz.shape[-3]
+    out = {}
+
+    if T >= 3:
+        accel = _finite_diff(xyz, 2, fps)
+        out['accel_joint'] = torch.linalg.norm(accel, dim=-1).mean(dim=-2)
+        if gt_xyz is not None:
+            gt_accel = _finite_diff(gt_xyz, 2, fps)
+            out['accel_error_joint'] = torch.linalg.norm(accel - gt_accel, dim=-1).mean(dim=-2)
+
+    if T >= 4:
+        jerk = _finite_diff(xyz, 3, fps)
+        out['jitter_joint'] = torch.linalg.norm(jerk, dim=-1).mean(dim=-2)
+
+    return out
+
 
 def compute_bone_length_error(pred_xyz, gt_xyz, edges):
-
-    T, J, _ = pred_xyz.shape
-
+    """pred_xyz, gt_xyz: [T, J, 3] -> absolute bone-length error [T, n_bones]"""
     bone_errors = []
-
     for p, c in edges:
+        pred_len = torch.norm(pred_xyz[:, p] - pred_xyz[:, c], dim=-1)
+        gt_len = torch.norm(gt_xyz[:, p] - gt_xyz[:, c], dim=-1)
+        bone_errors.append((pred_len - gt_len).abs())
+    return torch.stack(bone_errors, dim=1)
 
-        pred_len = torch.norm(
-            pred_xyz[:, p] - pred_xyz[:, c],
-            dim=-1
-        )
-
-        gt_len = torch.norm(
-            gt_xyz[:, p] - gt_xyz[:, c],
-            dim=-1
-        )
-
-        bone_errors.append(
-            (pred_len - gt_len).abs()
-        )
-
-    bone_errors = torch.stack(
-        bone_errors,
-        dim=1
-    )
-
-    return bone_errors
-
-
-def compute_all_metrics(pred, gt, gt_multi):
-    """
-    calculate all metrics
-
-    Args:
-        pred: candidate prediction, shape as [50, t_pred, 3 * joints_num]
-        gt: ground truth, shape as [1, t_pred, 3 * joints_num]
-        gt_multi: multi-modal ground truth, shape as [multi_modal, t_pred, 3 * joints_num]
-
-    Returns:
-        diversity, ade, fde, mmade, mmfde
-    """
-    if pred.shape[0] == 1:
-        diversity = 0.0
-    dist_diverse = torch.pdist(pred.reshape(pred.shape[0], -1))
-    diversity = dist_diverse.mean()
-    pred = pred[:, None, ...]
-
-    gt_multi = torch.from_numpy(gt_multi).to('cuda')
-    gt_multi_gt = torch.cat([gt_multi, gt], dim=0)
-    gt_multi_gt = gt_multi_gt[None, ...]
-
-    diff_multi = pred - gt_multi_gt
-    dist = torch.linalg.norm(diff_multi, dim=3)
-    # we can reuse 'dist' to optimize metrics calculation
-
-    mmfde, _ = dist[:, :-1, -1].min(dim=0)
-    mmfde = mmfde.mean()
-    mmade, _ = dist[:, :-1].mean(dim=2).min(dim=0)
-    mmade = mmade.mean()
-
-    ade, _ = dist[:, -1].mean(dim=1).min(dim=0)
-    fde, _ = dist[:, -1, -1].min(dim=0)
-    ade = ade.mean()
-    fde = fde.mean()
-
-    return diversity, ade, fde, mmade, mmfde
 
 def compute_joint_angle(a, b, c):
-    """
-    a-b-c
-
-    返回点b处夹角
-
-    a,b,c:
-        [...,3]
-    """
-
+    """angle (degree) at b of the triplet a-b-c, inputs [..., 3]"""
     ba = a - b
     bc = c - b
 
     ba = ba / (torch.norm(ba, dim=-1, keepdim=True) + 1e-8)
     bc = bc / (torch.norm(bc, dim=-1, keepdim=True) + 1e-8)
 
-    cos_theta = (ba * bc).sum(dim=-1)
+    cos_theta = torch.clamp((ba * bc).sum(dim=-1), -1.0, 1.0)
 
-    cos_theta = torch.clamp( cos_theta,  -1.0,  1.0)
-
-    angle = torch.rad2deg( torch.acos(cos_theta) )
-
-    return angle
+    return torch.rad2deg(torch.acos(cos_theta))
 
 
-def compute_joint_angle_error(pred_xyz, gt_xyz):
-    """
-    pred_xyz:
-        [T,J,3]
+# Angle triplets are resolved by joint name. The H36M layout has no separate ankle joint
+# (its 'Foot' joint is the ankle), so 'Ankle' falls back to 'Foot' only when it does not exist.
+_ANGLE_TRIPLET_NAMES = {
+    'RKnee': ('RHip', 'RKnee', 'RAnkle'),
+    'LKnee': ('LHip', 'LKnee', 'LAnkle'),
+    'LElbow': ('LShoulder', 'LElbow', 'LWrist'),
+    'RElbow': ('RShoulder', 'RElbow', 'RWrist'),
+}
+_ANGLE_TRIPLET_NAME_ALIASES = {'RAnkle': 'RFoot', 'LAnkle': 'LFoot'}
 
-    gt_xyz:
-        [T,J,3]
-    """
+
+def compute_joint_angle_error(pred_xyz, gt_xyz, dataset_name, num_joints):
+    """pred_xyz, gt_xyz: [T, J, 3] -> {angle name: absolute angle error [T]}"""
+    name_to_idx = {n: i for i, n in enumerate(get_joint_names(dataset_name, num_joints))}
+
+    def _idx(n):
+        return name_to_idx[n] if n in name_to_idx else name_to_idx[_ANGLE_TRIPLET_NAME_ALIASES[n]]
 
     angle_error = {}
-
-    # -------------------
-    # knees
-    # -------------------
-
-    pred_rknee = compute_joint_angle(
-        pred_xyz[:,0],
-        pred_xyz[:,1],
-        pred_xyz[:,2]
-    )
-
-    gt_rknee = compute_joint_angle(
-        gt_xyz[:,0],
-        gt_xyz[:,1],
-        gt_xyz[:,2]
-    )
-
-    angle_error["RKnee"] = (
-        pred_rknee - gt_rknee
-    ).abs()
-
-    pred_lknee = compute_joint_angle(
-        pred_xyz[:,3],
-        pred_xyz[:,4],
-        pred_xyz[:,5]
-    )
-
-    gt_lknee = compute_joint_angle(
-        gt_xyz[:,3],
-        gt_xyz[:,4],
-        gt_xyz[:,5]
-    )
-
-    angle_error["LKnee"] = (
-        pred_lknee - gt_lknee
-    ).abs()
-
-    # -------------------
-    # elbows
-    # -------------------
-
-    pred_lelbow = compute_joint_angle(
-        pred_xyz[:,10],
-        pred_xyz[:,11],
-        pred_xyz[:,12]
-    )
-
-    gt_lelbow = compute_joint_angle(
-        gt_xyz[:,10],
-        gt_xyz[:,11],
-        gt_xyz[:,12]
-    )
-
-    angle_error["LElbow"] = (
-        pred_lelbow - gt_lelbow
-    ).abs()
-
-    pred_relbow = compute_joint_angle(
-        pred_xyz[:,13],
-        pred_xyz[:,14],
-        pred_xyz[:,15]
-    )
-
-    gt_relbow = compute_joint_angle(
-        gt_xyz[:,13],
-        gt_xyz[:,14],
-        gt_xyz[:,15]
-    )
-
-    angle_error["RElbow"] = (
-        pred_relbow - gt_relbow
-    ).abs()
+    for key, (a_name, b_name, c_name) in _ANGLE_TRIPLET_NAMES.items():
+        ia, ib, ic = _idx(a_name), _idx(b_name), _idx(c_name)
+        pred_angle = compute_joint_angle(pred_xyz[:, ia], pred_xyz[:, ib], pred_xyz[:, ic])
+        gt_angle = compute_joint_angle(gt_xyz[:, ia], gt_xyz[:, ib], gt_xyz[:, ic])
+        angle_error[key] = (pred_angle - gt_angle).abs()
 
     return angle_error
 
 
-
-def compute_all_metrics_detailed(pred, gt, gt_multi, num_joints, dataset_name):
+def compute_all_metrics_detailed(pred, gt, gt_multi, num_joints, dataset_name, fps=None, hist=None):
     """
-    pred:
-        [K, T, D]
-
-    gt:
-        [1, T, D]
-
-    gt_multi:
-        [M, T, D]
+    pred:     [K, T, D] K predicted futures
+    gt:       [1, T, D] ground-truth future
+    gt_multi: [M, T, D] multimodal ground truth
+    hist:     [H, D] optional, frames in front of the prediction (observation/prediction seam of jitter)
     """
 
     if pred.shape[0] == 1:
@@ -281,7 +189,7 @@ def compute_all_metrics_detailed(pred, gt, gt_multi, num_joints, dataset_name):
     diff_multi = pred_expand - gt_multi_gt
 
     # =====================================================
-    # HumanMAC Original Metrics
+    # APD / ADE / FDE / MMADE / MMFDE
     # =====================================================
 
     dist_full = torch.linalg.norm(diff_multi, dim=3)
@@ -299,78 +207,52 @@ def compute_all_metrics_detailed(pred, gt, gt_multi, num_joints, dataset_name):
     fde = fde.mean()
 
     # =====================================================
-    # Detailed Analysis Metrics
+    # per-joint / per-bone / per-angle errors of the best (min-ADE) sample
     # =====================================================
 
     best_pred = pred[best_ade_idx]
     gt_single = gt.squeeze(0)
 
-    diff = (best_pred - gt_single).reshape(pred.shape[1], num_joints, 3)
+    pred_xyz = best_pred.reshape(pred.shape[1], num_joints, 3)
+    gt_xyz = gt_single.reshape(pred.shape[1], num_joints, 3)
 
-    joint_error = torch.linalg.norm(diff, dim=-1)
-
+    joint_error = torch.linalg.norm(pred_xyz - gt_xyz, dim=-1)  # [T, J]
     joint_ade = joint_error.mean(dim=0)
-
     joint_fde = joint_error[-1]
-
     time_ade = joint_error.mean(dim=1)
 
-    joint_time_error = joint_error
-
-    if dataset_name == 'h36m' or dataset_name == 'ap3d' or dataset_name == 'ap':
-        edges = H36M_SKELETON_EDGES
-    elif dataset_name == 'wp':
-        edges = SMPL_23_EDGES
-
-    bone_error = compute_bone_length_error(
-        best_pred.reshape(pred.shape[1], num_joints, 3),
-        gt_single.reshape(pred.shape[1], num_joints, 3),
-        edges=edges
-    )
-
+    bone_error = compute_bone_length_error(pred_xyz, gt_xyz, edges=get_skeleton_edges(dataset_name))
     bone_ade = bone_error.mean(dim=0)
-
     bone_fde = bone_error[-1]
 
-    bone_time_error = bone_error.mean(dim=1)
+    angle_error = compute_joint_angle_error(pred_xyz, gt_xyz, dataset_name=dataset_name, num_joints=num_joints)
+    angle_ade = {k: v.mean() for k, v in angle_error.items()}
 
-    whole_body_ble = bone_error.mean()
+    # =====================================================
+    # Acceleration / Jitter
+    # =====================================================
 
-    whole_body_blf = bone_fde.mean()
+    if fps is None:
+        fps = get_fps(dataset_name)
 
+    K = pred.shape[0]
+    pred_all_xyz = pred.reshape(K, pred.shape[1], num_joints, 3)
 
-    whole_body_fde = torch.sqrt((joint_fde ** 2).sum())
+    hist_xyz = None
+    if hist is not None:
+        if not torch.is_tensor(hist):
+            hist = torch.from_numpy(hist).to(pred.device).to(pred.dtype)
+        hist_xyz = hist.reshape(-1, num_joints, 3)
 
-    whole_body_ade = torch.sqrt((joint_ade ** 2).sum())
+    best_stat = compute_accel_jitter(pred_xyz, fps, hist_xyz=hist_xyz, gt_xyz=gt_xyz)
+    all_stat = compute_accel_jitter(
+        pred_all_xyz, fps,
+        hist_xyz=None if hist_xyz is None else hist_xyz[None].expand(K, -1, -1, -1))
+    gt_stat = compute_accel_jitter(gt_xyz, fps, hist_xyz=hist_xyz)
 
-    best_pred = pred[best_ade_idx]
-    gt_single = gt.squeeze(0)
-    pred_xyz = best_pred.reshape(
-        pred.shape[1],
-        num_joints,
-        3
-    )
-
-    gt_xyz = gt_single.reshape(
-        pred.shape[1],
-        num_joints,
-        3
-    )
-
-    angle_error = compute_joint_angle_error(
-        pred_xyz,
-        gt_xyz
-    )
-
-    angle_ade = {}
-
-    angle_fde = {}
-
-    for k, v in angle_error.items():
-        angle_ade[k] = v.mean()
-
-        angle_fde[k] = v[-1]
-
+    zero_j = torch.zeros(num_joints, device=pred.device, dtype=pred.dtype)
+    joint_jitter = best_stat.get('jitter_joint', zero_j)
+    joint_accel_error = best_stat.get('accel_error_joint', zero_j)
 
     return {
         'APD': diversity,
@@ -381,16 +263,15 @@ def compute_all_metrics_detailed(pred, gt, gt_multi, num_joints, dataset_name):
         'joint_ade': joint_ade,
         'joint_fde': joint_fde,
         'time_ade': time_ade,
-        'joint_time_error': joint_time_error,
-        'whole_body_ade': whole_body_ade,
-        'whole_body_fde': whole_body_fde,
         'bone_ade': bone_ade,
         'bone_fde': bone_fde,
-        'bone_time_error': bone_time_error,
-        'whole_body_ble': whole_body_ble,
-        'whole_body_blf': whole_body_blf,
         'angle_ade': angle_ade,
-        'angle_fde': angle_fde,
+        'jitter': joint_jitter.mean(),
+        'jitter_all': all_stat.get('jitter_joint', zero_j).mean(),
+        'jitter_gt': gt_stat.get('jitter_joint', zero_j).mean(),
+        'accel': best_stat.get('accel_joint', zero_j).mean(),
+        'accel_gt': gt_stat.get('accel_joint', zero_j).mean(),
+        'accel_error': joint_accel_error.mean(),
+        'joint_jitter': joint_jitter,
+        'joint_accel_error': joint_accel_error,
     }
-
-

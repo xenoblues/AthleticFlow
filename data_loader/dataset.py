@@ -2,9 +2,11 @@
 This code is adopted from:
 https://github.com/wei-mao-2019/gsps/blob/main/motion_pred/utils/dataset.py
 """
-import time
+import os
 
 import numpy as np
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class Dataset:
@@ -27,159 +29,74 @@ class Dataset:
     def prepare_data(self, **kwargs):
         raise NotImplementedError
 
-    def normalize_data(self, mean=None, std=None):
-        if mean is None:
-            all_seq = []
-            for data_s in self.data.values():
-                for seq in data_s.values():
-                    all_seq.append(seq[:, 1:])
-            all_seq = np.concatenate(all_seq)
-            self.mean = all_seq.mean(axis=0)
-            self.std = all_seq.std(axis=0)
-        else:
-            self.mean = mean
-            self.std = std
-        for data_s in self.data.values():
-            for action in data_s.keys():
-                data_s[action][:, 1:] = (data_s[action][:, 1:] - self.mean) / self.std
-        self.normalized = True
-
-    def denormalize(self, data):
-        std = self.std.flatten()
-        mean = self.mean.flatten()
-        return data * std + mean
-
     def sample(self):
-        subject = np.random.choice(self.subjects)
-        dict_s = self.data[subject]
-        action = np.random.choice(list(dict_s.keys()))
-        seq = dict_s[action]
-        # seq = dict_s['WalkDog']
-        # 随机截取一段t_total长的序列
-        fr_start = np.random.randint(seq.shape[0] - self.t_total)
-        fr_end = fr_start + self.t_total
-        traj = seq[fr_start: fr_end]
-        return traj[None, ...]
-
-    def sample_all_action(self):
-        # subject = np.random.choice(self.subjects)
-        dict_s = self.data['S9']
-
-        action_list = []
-        sample = []
-
-        for i in range(0, len(list(dict_s.keys()))):
-            type = list(dict_s.keys())[i].split(' ')[0]
-            if type == 'Discussion':
-                type = 'Discussion 1'
-            action_list.append(type)
-
-        action_list = list(set(action_list))
-
-        for i in range(0, len(action_list)):
-            action = action_list[i]
-            seq = dict_s[action]
-            fr_start = np.random.randint(seq.shape[0] - self.t_total)
-            fr_end = fr_start + self.t_total
-            traj = seq[fr_start: fr_end]
-            sample.append(traj[None, ...])
-
-        # 15 -> 30
-        # for i in range(0, len(action_list)):
-        #     action = action_list[i]
-        #     seq = dict_s[action]
-        #     fr_start = np.random.randint(seq.shape[0] - self.t_total)
-        #     fr_end = fr_start + self.t_total
-        #     traj = seq[fr_start: fr_end]
-        #     sample.append(traj[None, ...])
-
-        sample = np.concatenate(sample, axis=0)
-        return sample
-
-    def sample_iter_action(self, action_category, dataset_type):
-        # subject = np.random.choice(self.subjects)
-        if dataset_type == 'h36m':
-            dict_s = self.data['S9']
-        elif dataset_type == 'humaneva':
-            dict_s = self.data['Validate/S2']
-        elif dataset_type == 'assemble':
-            pass
-        else:
-            raise
-        # dict_s = self.data['S9']
-        sample = []
-
-        action = action_category
-        seq = dict_s[action]
-        fr_start = np.random.randint(seq.shape[0] - self.t_total)
-        fr_end = fr_start + self.t_total
-        traj = seq[fr_start: fr_end]
-        sample.append(traj[None, ...])
-
-        sample = np.concatenate(sample, axis=0)
-        return sample
-
-    def prepare_iter_action(self, dataset_type):
-        # subject = np.random.choice(self.subjects)
-        if dataset_type == 'h36m':
-            dict_s = self.data['S9']
-        elif dataset_type == 'humaneva':
-            dict_s = self.data['Validate/S2']
-        else:
-            return None
-        # dict_s = self.data['S9']
-
-        action_list = []
-        sample = []
-
-        for i in range(0, len(list(dict_s.keys()))):
-            # type = list(dict_s.keys())[i].split(' ')[0]
-            type = list(dict_s.keys())[i]
-            if type == 'Discussion':
-                type = 'Discussion 1'
-            action_list.append(type)
-
-        action_list = list(set(action_list))
-        return action_list
+        raise NotImplementedError
 
     def sampling_generator(self, num_samples=1000, batch_size=8, aug=True):
-        for i in range(num_samples // batch_size):
-            # st = time.time()
-            sample = []
-            for i in range(batch_size):
-                sample_i = self.sample()
-                sample.append(sample_i)
-            if self.dataset_name == 'assemble':
-                sample = np.asarray(sample)
-            else:
-                sample = np.concatenate(np.asarray(sample), axis=0)
-
-            seq_len = sample.shape[1]
-            # 随机掩膜
-            mask_indices = np.random.random_integers(int(seq_len * 0.08), int(seq_len * 0.92), int(seq_len * 0.2))
-            mask = np.array([int(i not in mask_indices) for i in range(seq_len)])
-
-            if aug is True:
-                if np.random.uniform() > 0.5:  # x-y rotating
-                    theta = np.random.uniform(0, 2 * np.pi)
-                    rotate_matrix = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
-                    rotate_xy = np.matmul(sample.transpose([0, 2, 1, 3])[..., 0:2], rotate_matrix)
-                    sample[..., 0:2] = rotate_xy.transpose([0, 2, 1, 3])
-                    del theta, rotate_matrix, rotate_xy
-                if np.random.uniform() > 0.5:  # x-z mirroring
-                    sample[..., 0] = - sample[..., 0]
-                if np.random.uniform() > 0.5:  # y-z mirroring
-                    sample[..., 1] = - sample[..., 1]
-            # print("batch 生成时间:{:.5f}".format(time.time() - st))
-            yield sample, mask
+        raise NotImplementedError
 
     def iter_generator(self, step=25):
-        for data_s in self.data.values():
-            for seq in data_s.values():
-                seq_len = seq.shape[0]
-                for i in range(0, seq_len - self.t_total, step):
-                    traj = seq[None, i: i + self.t_total]
-                    yield traj
-
-    def redirect(self, data):
         raise NotImplementedError
+
+
+class PerSequenceMultimodalDataset:
+    """
+    Test windows with multimodal ground truth for AthletePose3D / AthleticsPose.
+
+    Evaluation protocol: windows of t_his + t_pred frames are extracted WITHIN every test sequence with stride t_his
+    (sequences shorter than t_his + t_pred are skipped); windows never straddle two sequences. The window order must
+    equal the 'test_clip_meta' array (sequence id, start frame) of the multimodal file, whose i-th entry of
+    'data_multimodal' lists the indices of the candidate futures (training windows) of the i-th test window.
+
+    Subclasses set self.skeleton, self.kept_joints and implement load_test_sequences() and the default file names.
+    """
+    default_multimodal_path = None
+    default_candi_path = None
+
+    def __init__(self, mode, t_his=15, t_pred=60, multimodal_path=None, data_candi_path=None, **kwargs):
+        assert mode == 'test', 'the multimodal dataset is only used for evaluation'
+        self.mode = mode
+        self.t_his = t_his
+        self.t_pred = t_pred
+        self.t_total = t_his + t_pred
+        self.multimodal_path = os.path.join(ROOT_DIR, multimodal_path or self.default_multimodal_path)
+        self.data_candi_path = os.path.join(ROOT_DIR, data_candi_path or self.default_candi_path)
+        self.prepare_data()
+
+    def load_test_sequences(self):
+        """list of test sequences, each (T_i, 17, 3)"""
+        raise NotImplementedError
+
+    def prepare_data(self):
+        for path in (self.multimodal_path, self.data_candi_path):
+            if not os.path.exists(path):
+                raise FileNotFoundError(f"multimodal file not found: {path} (see README for the download / "
+                                        f"the *_multimodal_data_generation.py scripts)")
+
+        self.seqs = [seq.astype(np.float32) for seq in self.load_test_sequences()]
+
+        z = np.load(self.multimodal_path, allow_pickle=True)
+        self.multi_dict = z['data_multimodal'].item()['all_subjects']['all_actions']
+        self.data_candi = np.load(self.data_candi_path, allow_pickle=True)['data_candidate.npy'].astype(np.float32)
+
+        # per-sequence windows, stride t_his
+        self.windows = [(sid, s) for sid, seq in enumerate(self.seqs) if len(seq) >= self.t_total
+                        for s in range(0, len(seq) - self.t_total + 1, self.t_his)]
+        meta = z['test_clip_meta']
+        assert len(meta) == len(self.windows) and np.array_equal(np.asarray(self.windows), meta), \
+            f'test window order does not match test_clip_meta of {self.multimodal_path}'
+        print(f'{self.__class__.__name__}: {len(self.windows)} test windows from '
+              f'{sum(len(seq) >= self.t_total for seq in self.seqs)} sequences')
+
+    def iter_generator(self, step=None):
+        assert step is None or step == self.t_his, 'the evaluation protocol uses stride t_his'
+        for gi, (sid, st) in enumerate(self.windows):
+            traj = self.seqs[sid][None, st:st + self.t_total]
+            idx = self.multi_dict.get(np.int64(gi), np.array([], dtype=np.int32))
+            if len(idx) == 0:
+                multi_traj = traj.copy()
+            else:
+                # candidate futures, history replaced by the observed history
+                multi_traj = self.data_candi[idx]
+                multi_traj[:, :self.t_his] = traj[:, :self.t_his]
+            yield traj, multi_traj
