@@ -91,7 +91,7 @@ python -m data_loader.ap3d_multimodal_data_generation
 
 ### Pretrained models
 
-Checkpoints are not tracked by git. Download `athleticflow_weights_rev2.zip` (link will be added) and extract
+Checkpoints are not tracked by git. Download `athleticflow_weights_rev2.zip` from [Google Drive](https://drive.google.com/file/d/1bwvISjFt1QDSNR8U8Err750rf1e1DQfT/view?usp=drive_link) and extract
 it at the root of the project. It contains the seed-0 checkpoints of AthleticFlow and SDFM and of the TransFusion
 and HumanMAC baselines:
 
